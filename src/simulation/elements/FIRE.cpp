@@ -36,7 +36,7 @@ void Element::Element_FIRE()
 	HeatConduct = 88;
 	Description = ByteString("火焰,用于点燃或加热").FromUtf8();
 
-	Properties = TYPE_GAS|PROP_LIFE_DEC|PROP_LIFE_KILL;
+	Properties = TYPE_GAS|PROP_LIFE_DEC;
 	CarriesTypeIn = 1U << FIELD_CTYPE;
 
 	LowPressure = IPL;
@@ -76,6 +76,11 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 				parts[i].life = 0;
 				parts[i].ctype = PT_FIRE;
 			}
+			else
+			{
+				sim->kill_part(i);
+				return 1;
+			}
 		}
 		break;
 	case PT_FIRE:
@@ -93,6 +98,11 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 				//@ FIRE -> SMKE
 				sim->part_change_type(i,x,y,PT_SMKE);
 				parts[i].life = sim->rng.between(250, 269);
+			}
+			else
+			{
+				sim->kill_part(i);
+				return 1;
 			}
 		}
 		break;
@@ -144,6 +154,12 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 						parts[i].ctype = PT_TUNG;
 				}
 			}
+		}
+		else if (parts[i].ctype == PT_GOLD && pres < -200.0f && parts[i].temp > elements[PT_PTNM].HighTemperature && sim->rng.chance(1, 20000))
+		{
+			//@ LAVA(GOLD) -> LAVA(PTNM)
+			parts[i].ctype = PT_PTNM;
+			sim->pv[y/CELL][x/CELL] += 2.0f;
 		}
 		else if ((parts[i].ctype == PT_STNE || !parts[i].ctype) && pres >= 30.0f && (parts[i].temp > elements[PT_ROCK].HighTemperature || pres < elements[PT_ROCK].HighPressure)) // Form ROCK with pressure, if it will stay molten or not immediately break
 		{
@@ -258,6 +274,20 @@ int Element_FIRE_update(UPDATE_FUNC_ARGS)
 						parts[i].tmp = 0;
 						parts[i].ctype = PT_NSCN;
 						parts[ID(r)].ctype = PT_PSCN;
+					}
+					else if (parts[i].ctype == PT_SLCN && rt == PT_LAVA && parts[ID(r)].ctype == PT_SALT)
+					{
+						//@ LAVA(SLCN) + LAVA(SALT) -> LAVA(LITH)
+						if (parts[i].temp > elements[PT_LITH].HighTemperature && sim->rng.chance(1, 1000))
+						{
+							parts[i].ctype = PT_LITH;
+							parts[i].tmp = 0;
+							parts[i].tmp2 = 0;
+							parts[i].life = 0;
+
+							sim->kill_part(ID(r));
+							continue;
+						}
 					}
 					else if (rt == PT_HEAC && parts[i].ctype == PT_HEAC)
 					{
