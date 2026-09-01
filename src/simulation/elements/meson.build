@@ -197,6 +197,9 @@ simulation_elem_names = [
         'SEED',
         'EMW',
         'EMR',
+        'EMJP',
+        'EMJN',
+        'EMMG',
 ]
 
 simulation_elem_src = []

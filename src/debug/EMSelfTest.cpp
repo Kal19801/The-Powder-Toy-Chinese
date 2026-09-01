@@ -57,6 +57,10 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 for (int x = 350; x < 420; ++x) sim->create_part(-1, x, 250, PT_EMR);
                 for (int x = 430; x < 480; ++x) sim->create_part(-1, x, 180, PT_WIRE);
                 for (int x = 430; x < 480; ++x) sim->create_part(-1, x, 200, PT_METL);
+                // the applet material modes ported as elements: current sources and magnets
+                for (int x = 500; x < 550; ++x) sim->create_part(-1, x, 180, PT_EMJP);
+                for (int x = 500; x < 550; ++x) sim->create_part(-1, x, 220, PT_EMJN);
+                for (int x = 80; x < 140; ++x) sim->create_part(-1, x, 140, PT_EMMG);
                 std::cout << "[EMSELFTEST] setup complete" << std::endl;
                 break;
         }
@@ -80,7 +84,15 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 Check(mediums >= 10, "TPT glass mapped to EM dielectric cells");
                 Check(ferro >= 10, "TPT iron mapped to EM ferromagnet cells");
                 Check(resonant >= 10, "EMR element mapped to resonant cells");
-                Check(sources >= 1, "global/EMW source injects current");
+                Check(sources >= 3, "global/EMW/EMJP/EMJN sources inject current");
+                // EMMG magnets must map to magnetized cells (mx/my = +-1)
+                int magnets = 0;
+                for (auto &cell : emf->cells)
+                {
+                        if (cell.mx != 0 || cell.my != 0)
+                                magnets++;
+                }
+                Check(magnets >= 10, "EMMG element mapped to magnet cells");
                 gameModel.SetEMViewMode(EMVIEW_B_LINES); // exercise field line rendering
                 break;
         }
@@ -97,6 +109,24 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 }
                 Check(anyMag, "EMMD magnetization applies to ferromagnetic cells");
                 Check(anyAdj, "EMADJ parameter adjustment applies to material cells");
+                // the five separate applet adjust modes (EMAJ* tools)
+                bool adjC = false, adjP = false, adjJ = false, adjD = false, adjS = false;
+                for (int gi = 0; gi < emf->gw * emf->gh; ++gi)
+                {
+                        adjC |= emf->ApplyAdjustMode(EMADJM_CONDUCT, gi, 0.5f);
+                        adjP |= emf->ApplyAdjustMode(EMADJM_PERM, gi, 0.5f);
+                        adjJ |= emf->ApplyAdjustMode(EMADJM_J, gi, 0.5f);
+                        adjD |= emf->ApplyAdjustMode(EMADJM_MEDIUM, gi, 0.5f);
+                        adjS |= emf->ApplyAdjustMode(EMADJM_MAG_STR, gi, 0.5f);
+                }
+                Check(adjC, "EMAJC conductivity adjust applies to conductor cells");
+                Check(adjP, "EMAJP permeability adjust applies to ferromagnet cells");
+                Check(adjJ, "EMAJJ current adjust applies to current cells");
+                Check(adjD, "EMAJD dielectric adjust applies to medium cells");
+                Check(adjS, "EMAJS strength adjust applies to magnet cells");
+                // VacuumCell / ClearCellOverrides (EMCLR + erase integration)
+                emf->VacuumCell(emf->CellIndex(100, 180));
+                Check(emf->cells[emf->CellIndex(100, 180)].ovMask == 0, "EMCLR vacuum clears cell overrides");
                 gameModel.SetEMViewMode(EMVIEW_FORCE); // exercise force flood fill
                 break;
         }
@@ -153,6 +183,24 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
         }
         case 145:
         {
+                // new-save regression: a full simulation reset (new save, loaded
+                // save, clear) must wipe every EM tool override, otherwise EMADJ/
+                // EMMD painting leaks into the next save forever
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                bool anyOv = false;
+                for (auto &cell : emf->cells)
+                {
+                        anyOv |= cell.ovMask != 0;
+                }
+                Check(anyOv, "EM overrides present before the reset");
+                sim->clear_sim();
+                anyOv = false;
+                for (auto &cell : emf->cells)
+                {
+                        anyOv |= cell.ovMask != 0;
+                }
+                Check(!anyOv, "clear_sim (new save) clears all EM overrides");
                 if (failCount)
                 {
                         std::cerr << "[EMSELFTEST] RESULT: " << failCount << " FAILURES" << std::endl;

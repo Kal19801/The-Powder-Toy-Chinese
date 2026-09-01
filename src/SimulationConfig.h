@@ -58,9 +58,11 @@ constexpr int EM_CELL_SIZE_DEFAULT = 4;
 constexpr int EM_MARGIN_AT_4 = 20;
 //scale of Joule heating applied to conducting particles sitting in cells that carry induced current
 constexpr float EM_JOULE_HEAT = 2.0f;
-//|dazdt| (E field amplitude) above which conductors may be induced into sparking, plus the chance per frame
-constexpr float EM_INDUCED_SPARK_THRESHOLD = 1.8f;
-constexpr int   EM_INDUCED_SPARK_CHANCE = 8;
+//|dazdt| (E field amplitude) above which conductors may be induced into sparking, plus the chance per frame;
+// kept conservative (high threshold, low chance) so that metal near EM sources does not constantly spark
+// and melt like it used to with the old 1.8 / 1-in-8 values; vanilla sparking behaviour is unaffected
+constexpr float EM_INDUCED_SPARK_THRESHOLD = 2.2f;
+constexpr int   EM_INDUCED_SPARK_CHANCE = 16;
 //scale of the magnetic pressure force applied to ferromagnetic particles
 constexpr float EM_MAG_FORCE = 0.03f;
 

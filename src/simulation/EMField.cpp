@@ -6,6 +6,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <numbers>
+
+// NOTE: use std::numbers::pi instead of M_PI; M_PI is not defined by MSVC and
+// not by MinGW under strict -std=c++20, which broke all Windows CI builds.
 
 // Uncomment (or define through the build system) to trace the EM field internals
 // while debugging; every block guarded by this macro is a debug block meant to be
@@ -52,6 +56,8 @@ namespace
                 { PT_SPRK, 0.0f, 1.0f, 0, true, 1.0f },   // sparking cell = current source; the metal
                                                           // around it forms the antenna
                 { PT_ELEC, 0.0f, 1.0f, 0, true, -1.0f },  // electrons are a negative current
+                { PT_EMJP, 0.0f, 1.0f, 0, true,  1.0f },  // applet MODE_J_POS: positive current source
+                { PT_EMJN, 0.0f, 1.0f, 0, true, -1.0f },  // applet MODE_J_NEG: negative current source
         };
 
         bool IsConductorForSpark(int type)
@@ -122,6 +128,22 @@ void EMField::Clear()
         filterCount %= 4;
 }
 
+void EMField::ClearAll()
+{
+        // applet doClearAll(): reset the wave state AND all material overrides; the
+        // materials themselves are re-derived from the (now empty) particle list by
+        // the next SyncMaterials(). Called whenever the whole simulation is reset
+        // (new save, loaded save, clear), so no EM state leaks across saves.
+        Clear();
+        ClearOverrides();
+        for (auto &cell : cells)
+        {
+                cell.jz = 0;
+                cell.jzext = 0;
+        }
+        EMF_DBG("EMField: full reset (ClearAll)\n");
+}
+
 void EMField::ClearOverrides()
 {
         for (auto &cell : cells)
@@ -137,11 +159,55 @@ void EMField::ClearOverrides()
         EMF_DBG("EMField: cleared all tool overrides\n");
 }
 
+void EMField::ClearCellOverrides(int gi)
+{
+        auto &cell = cells[gi];
+        cell.ovMask = 0;
+        cell.ovConduct = 0;
+        cell.ovPerm = 0;
+        cell.ovJz = 0;
+        cell.ovMedium = 0;
+        cell.ovMag = 0;
+        cell.ovDir = 0;
+}
+
+void EMField::VacuumCell(int gi)
+{
+        // applet MODE_CLEAR / editFuncPoint preamble: wipe the cell back to vacuum;
+        // used by the EMCLR tool together with deleting the underlying particles
+        ClearCellOverrides(gi);
+        auto &cell = cells[gi];
+        cell.jz = 0;
+        cell.jzext = 0;
+        cell.az = 1e-10;
+        cell.dazdt = 1e-10;
+        cell.epos = 0;
+}
+
 int EMField::CellIndex(int px, int py) const
 {
         int cx = std::clamp(px / cellSize, 0, gw - 1);
         int cy = std::clamp(py / cellSize, 0, gh - 1);
         return cx + cy * gw;
+}
+
+// material type classification, faithful port of the applet's OscElement::getType();
+// the order of the checks matches the applet exactly and must not be changed
+int EMField::CellTypeOf(const Cell &oe)
+{
+        if (oe.perm < 1)
+                return EMCT_DIAMAGNET;
+        if (oe.perm > 1)
+                return EMCT_FERROMAGNET;
+        if (oe.mx != 0 || oe.my != 0)
+                return EMCT_MAGNET;
+        if (oe.medium > 0)
+                return EMCT_MEDIUM;
+        if (oe.conductivity > 0)
+                return EMCT_CONDUCTOR;
+        if (oe.jz != 0 || oe.jzext != 0)
+                return EMCT_CURRENT;
+        return EMCT_NONE;
 }
 
 // Derive the material properties of every EM cell from the TPT particles it covers.
@@ -183,6 +249,20 @@ void EMField::SyncMaterials()
                 if (p.type == PT_EMR)
                 {
                         cells[CellIndex(int(p.x), int(p.y))].resonant = true;
+                        continue;
+                }
+                if (p.type == PT_EMMG)
+                {
+                        // EMMG: permanent magnet, port of the applet's M_* paint modes;
+                        // .ctype selects the direction (0 = down, 1 = up, 2 = left, 3 = right)
+                        auto &cell = cells[CellIndex(int(p.x), int(p.y))];
+                        switch (p.ctype)
+                        {
+                        case 1: cell.my = -1; break; // up
+                        case 2: cell.mx = -1; break; // left
+                        case 3: cell.mx =  1; break; // right
+                        default: cell.my =  1; break; // down, like MODE_M_DOWN
+                        }
                         continue;
                 }
                 for (const auto &mat : elemMaterials)
@@ -229,14 +309,32 @@ void EMField::SyncMaterials()
                         {
                                 cell.perm = std::clamp(cell.ovPerm, 0.5f, 50.0f);
                         }
-                        if (cell.ovMask & (EM_OV_MAGDIR | EM_OV_MAGSTR))
+                }
+                // magnetization overrides apply to ferromagnets AND to painted magnet
+                // cells (applet TYPE_MAGNET), which carry perm == 1; the applet's
+                // ADJ_MAG_STR sets the magnitude keeping the direction, while
+                // ADJ_MAG_DIR sets the direction keeping the magnitude
+                if (cell.perm > 1 || cell.mx != 0 || cell.my != 0)
+                {
+                        float mag = std::sqrt(cell.mx * cell.mx + cell.my * cell.my);
+                        if (cell.ovMask & EM_OV_MAGSTR)
                         {
-                                float str = (cell.ovMask & EM_OV_MAGSTR) ? std::clamp(cell.ovMag, 0.01f, 2.0f) : 1.0f;
-                                if (cell.ovMask & EM_OV_MAGDIR)
+                                mag = std::clamp(cell.ovMag, 0.01f, 2.0f);
+                        }
+                        if (cell.ovMask & EM_OV_MAGDIR)
+                        {
+                                float angle = cell.ovDir * 2.0f * std::numbers::pi_v<float>;
+                                cell.mx = mag * std::cos(angle);
+                                cell.my = -mag * std::sin(angle);
+                        }
+                        else if ((cell.ovMask & EM_OV_MAGSTR) && (cell.mx != 0 || cell.my != 0))
+                        {
+                                // magnitude set by MAG_STR, direction preserved
+                                float cur = std::sqrt(cell.mx * cell.mx + cell.my * cell.my);
+                                if (cur > 0)
                                 {
-                                        float angle = cell.ovDir * 2.0f * float(M_PI);
-                                        cell.mx = str * std::cos(angle);
-                                        cell.my = -str * std::sin(angle);
+                                        cell.mx *= mag / cur;
+                                        cell.my *= mag / cur;
                                 }
                         }
                 }
@@ -395,7 +493,7 @@ void EMField::DoSources(double tadd, bool clear)
                         {
                                 au = 38;
                         }
-                        w2 = w + au * (M_PI / 38);
+                        w2 = w + au * (std::numbers::pi / 38);
                         break;
                 }
                 }
@@ -414,7 +512,7 @@ void EMField::DoSources(double tadd, bool clear)
                         break;
                 case EM_SWF_PACKET:
                 {
-                        double wp = std::fmod(w, M_PI * 2);
+                        double wp = std::fmod(w, std::numbers::pi * 2);
                         double adjw = wp / (EM_FREQ_MULT * forceBarValue);
                         adjw -= 10;
                         v = std::exp(-.01 * adjw * adjw) * std::sin(adjw * .2);
@@ -497,7 +595,7 @@ void EMField::DoSources(double tadd, bool clear)
                 double w = es.freq * t * EM_FREQ_MULT;
                 if (es.waveform == EM_SWF_PACKET)
                 {
-                        double wp = std::fmod(w, M_PI * 2);
+                        double wp = std::fmod(w, std::numbers::pi * 2);
                         double adjw = wp / (EM_FREQ_MULT * std::max(es.freq, 1.0f));
                         adjw -= 10;
                         vew = std::exp(-.01 * adjw * adjw) * std::sin(adjw * .2);
@@ -811,6 +909,63 @@ bool EMField::ApplyMagDir(int gi, float strength)
         {
                 cell.ovMask |= EM_OV_MAGDIR;
                 cell.ovDir = std::clamp(strength, 0.0f, 1.0f);
+                return true;
+        }
+        return false;
+}
+
+// One specific applet MODE_ADJ_* mode, faithful port of EMWave2's doAdjust():
+// the value only lands on cells whose getType() matches the mode, the strength
+// slider (0..1) plays the role of the applet's adjustBar (1..100 -> 0.01..1).
+bool EMField::ApplyAdjustMode(int mode, int gi, float strength)
+{
+        auto &cell = cells[gi];
+        float val = std::clamp(strength, 0.01f, 1.0f);
+        switch (mode)
+        {
+        case EMADJM_CONDUCT:
+                // applet: if (oe.getType() == TYPE_CONDUCTOR) oe.conductivity = val;
+                if (CellTypeOf(cell) != EMCT_CONDUCTOR)
+                        return false;
+                cell.ovMask |= EM_OV_CONDUCT;
+                cell.ovConduct = val;
+                return true;
+        case EMADJM_PERM:
+        {
+                // applet: vali clamped to >= 3 (0.03), perm = vali/2 (so 1.5 .. 50)
+                int vali = int(val * 100.0f);
+                if (vali < 3)
+                        vali = 3;
+                if (CellTypeOf(cell) != EMCT_FERROMAGNET)
+                        return false;
+                cell.ovMask |= EM_OV_PERM;
+                cell.ovPerm = vali / 2.0f;
+                return true;
+        }
+        case EMADJM_J:
+                // applet: if (getType() == TYPE_CURRENT) oe.jz = sign * val; our
+                // external currents live in jzext, the override rescales them
+                if (CellTypeOf(cell) != EMCT_CURRENT)
+                        return false;
+                cell.ovMask |= EM_OV_JZ;
+                cell.ovJz = val;
+                return true;
+        case EMADJM_MEDIUM:
+                if (CellTypeOf(cell) != EMCT_MEDIUM)
+                        return false;
+                cell.ovMask |= EM_OV_MEDIUM;
+                cell.ovMedium = val * EM_MEDIUM_MAX;
+                return true;
+        case EMADJM_MAG_DIR:
+                // applet: if (getType() == TYPE_MAGNET) rotate; our version also
+                // accepts ferromagnets, like the pre-existing EMMD tool
+                return ApplyMagDir(gi, val);
+        case EMADJM_MAG_STR:
+                // applet: if (getType() == TYPE_MAGNET) scale |m| to val
+                if (CellTypeOf(cell) != EMCT_MAGNET && CellTypeOf(cell) != EMCT_FERROMAGNET)
+                        return false;
+                cell.ovMask |= EM_OV_MAGSTR;
+                cell.ovMag = val;
                 return true;
         }
         return false;

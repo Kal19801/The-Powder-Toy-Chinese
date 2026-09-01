@@ -1027,38 +1027,12 @@ void Renderer::draw_air()
 
 namespace
 {
-        // material type classification, port of the applet's OscElement::getType()
-        enum EmCellType
-        {
-                EMCT_NONE = 0,
-                EMCT_DIAMAGNET,
-                EMCT_FERROMAGNET,
-                EMCT_MAGNET,
-                EMCT_MEDIUM,
-                EMCT_CONDUCTOR,
-                EMCT_CURRENT,
-        };
-
-        EmCellType EMCellTypeOf(const EMField::Cell &oe)
-        {
-                if (oe.perm < 1)
-                        return EMCT_DIAMAGNET;
-                if (oe.perm > 1)
-                        return EMCT_FERROMAGNET;
-                if (oe.mx != 0 || oe.my != 0)
-                        return EMCT_MAGNET;
-                if (oe.medium > 0)
-                        return EMCT_MEDIUM;
-                if (oe.conductivity > 0)
-                        return EMCT_CONDUCTOR;
-                if (oe.jz != 0 || oe.jzext != 0)
-                        return EMCT_CURRENT;
-                return EMCT_NONE;
-        }
+        // material type classification: EMField::CellTypeOf() (in EMField.h), a port
+        // of the applet's OscElement::getType()
 
         bool EMCellFeelsForce(const EMField::Cell &oe)
         {
-                int t = EMCellTypeOf(oe);
+                int t = EMField::CellTypeOf(oe);
                 return t != EMCT_NONE && t != EMCT_MEDIUM;
         }
 
@@ -1510,14 +1484,26 @@ void Renderer::draw_emfield()
                         }
                         int px = cx * cs;
                         int py = cy * cs;
-                        for (int yy = py; yy < std::min(py + cs, YRES); yy++)
+                        // Compose the field additively on top of the air/particle view
+                        // instead of painting an opaque cell grid over the whole canvas:
+                        // an opaque overlay made every material look like cell-sized
+                        // blocks and hid the game underneath. Cells with nothing to show
+                        // contribute nothing at all, so the game stays fully visible.
+                        if (col_r || col_g || col_b)
                         {
-                                for (int xx = px; xx < std::min(px + cs, XRES); xx++)
+                                for (int yy = py; yy < std::min(py + cs, YRES); yy++)
                                 {
-                                        video[{ xx, yy }] = rgb.Pack();
+                                        for (int xx = px; xx < std::min(px + cs, XRES); xx++)
+                                        {
+                                                video[{ xx, yy }] = RGB::Unpack(video[{ xx, yy }]).AddFire(rgb, 200).Pack();
+                                        }
                                 }
+                                cell.col = rgb.Pack();
                         }
-                        cell.col = rgb.Pack();
+                        else
+                        {
+                                cell.col = 0;
+                        }
                         if (vv != EMVIEW_OFF && !edgeCell)
                         {
                                 double dx = 0;

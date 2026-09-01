@@ -1060,6 +1060,13 @@ void Simulation::clear_sim(void)
         player2.spawnID = -1;
         player2.rocketBoots = false;
         player2.fan = false;
+        // Full EM field reset (applet doClearAll): the wave state and all tool
+        // overrides must not leak across a new save, a loaded save or a cleared
+        // simulation; this is the one place every such reset funnels through.
+        if (emfOwner)
+        {
+                emfOwner->ClearAll();
+        }
         //memset(pers_bg, 0, WINDOWW*YRES*PIXELSIZE);
         //memset(fire_r, 0, sizeof(fire_r));
         //memset(fire_g, 0, sizeof(fire_g));

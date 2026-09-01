@@ -12,6 +12,16 @@ simulation_tool_names = [
         'WIND',
         'EMADJ',
         'EMMD',
+        'EMCLR',
+        'EMMGD',
+        'EMMGU',
+        'EMMGL',
+        'EMMGR',
+        'EMAJC',
+        'EMAJP',
+        'EMAJJ',
+        'EMAJD',
+        'EMAJS',
 ]
 
 simulation_tool_src = []
