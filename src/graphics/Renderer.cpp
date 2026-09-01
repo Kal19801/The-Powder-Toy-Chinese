@@ -1102,7 +1102,8 @@ namespace
                 }
         };
 
-        // electric/magnetic field line tracing, port of the applet's renderLines()
+        // electric/magnetic field line tracing, port of the applet's renderLines();
+        // traces in VISIBLE cell space and offsets into the (possibly padded) grid
         void EMRenderLines(Renderer &ren, const EMField &emf, double mult)
         {
 #if EMFIELD_DEBUG
@@ -1130,8 +1131,8 @@ namespace
                 // our grid is not, so use separate spacings to keep every start point
                 // inside the grid (otherwise the trace bails out of bounds before it can
                 // mark a crossing and the search never advances -> infinite loop)
-                double lsx = lineGridSize / double(emf.gw);
-                double lsy = lineGridSize / double(emf.gh);
+                double lsx = lineGridSize / double(emf.visW);
+                double lsy = lineGridSize / double(emf.visH);
                 double multl = mult;
                 int linemax = 0;
                 int dir = 1;
@@ -1182,7 +1183,7 @@ namespace
                                 oldcgx = -1;
                                 oldcgy = -1;
                         }
-                        if (x < 0 || y < 0 || x >= emf.gw || y >= emf.gh)
+                        if (x < 0 || y < 0 || x >= emf.visW || y >= emf.visH)
                         {
                                 x = 0;
                                 continue;
@@ -1207,12 +1208,12 @@ namespace
                         }
                         int xi = int(x);
                         int yi = int(y);
-                        if (xi < 1 || yi < 1 || xi >= emf.gw - 1 || yi >= emf.gh - 1)
+                        if (xi < 1 || yi < 1 || xi >= emf.visW - 1 || yi >= emf.visH - 1)
                         {
                                 x = 0;
                                 continue;
                         }
-                        int gi = xi + emf.gw * yi;
+                        int gi = (xi + emf.padL) + emf.gw * (yi + emf.padT);
                         double dx = emf.cells[gi - emf.gw].az - emf.cells[gi + emf.gw].az;
                         double dy = emf.cells[gi + 1].az - emf.cells[gi - 1].az;
                         double dn = std::sqrt(dx * dx + dy * dy);
@@ -1341,8 +1342,18 @@ void Renderer::draw_emfield()
 
         for (int cy = 0; cy < gh; cy++)
         {
+                int vy = cy - emf->padT;
+                if (vy < 0 || vy >= emf->visH)
+                {
+                        continue; // boundary padding is never rendered
+                }
                 for (int cx = 0; cx < gw; cx++)
                 {
+                        int vx = cx - emf->padL;
+                        if (vx < 0 || vx >= emf->visW)
+                        {
+                                continue; // boundary padding is never rendered
+                        }
                         int gi = cx + cy * gw;
                         auto &cell = emf->cells[gi];
                         int vs = viewScalar;
@@ -1482,8 +1493,8 @@ void Renderer::draw_emfield()
                         {
                                 rgb = RGB(rgb.Red / 10, rgb.Green / 10, rgb.Blue / 10);
                         }
-                        int px = cx * cs;
-                        int py = cy * cs;
+                        int px = vx * cs;
+                        int py = vy * cs;
                         // Compose the field additively on top of the air/particle view
                         // instead of painting an opaque cell grid over the whole canvas:
                         // an opaque overlay made every material look like cell-sized

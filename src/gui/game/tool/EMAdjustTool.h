@@ -43,7 +43,7 @@ private:
 
 public:
         EMAdjustTool(GameModel &newGameModel):
-                Tool(0, "EMADJ", ByteString("EM参数调整:以PROP笔的方式调整电磁场参数(电导/磁导/电流/介电/磁向/磁强)").FromUtf8(),
+                Tool(0, "EMADJ", ByteString("EM参数调整:调整物质参数(电导/磁导/电流/介电/磁向/磁强)").FromUtf8(),
                         0x80BFFF_rgb, "DEFAULT_UI_EMADJUST", nullptr
                 ), gameModel(newGameModel)
         {

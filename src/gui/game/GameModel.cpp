@@ -182,6 +182,7 @@ GameModel::GameModel(GameView *newView):
                 auto *emf = sim->emfOwner.get();
                 emf->enabled = prefs.Get("Simulation.EMField.Enabled", false);
                 emf->SetCellSize(prefs.Get("Simulation.EMField.CellSize", EM_CELL_SIZE_DEFAULT));
+                emf->SetBoundaryMode(prefs.Get("Simulation.EMField.Boundary", EMBND_DEFAULT));
                 emf->sourceMode = prefs.Get("Simulation.EMField.SourceMode", EMSRC_DEFAULT);
                 if (emf->sourceMode < 0 || emf->sourceMode >= EMSRC_COUNT)
                 {
@@ -258,6 +259,7 @@ GameModel::~GameModel()
                         auto *emf = sim->emfOwner.get();
                         prefs.Set("Simulation.EMField.Enabled", emf->enabled);
                         prefs.Set("Simulation.EMField.CellSize", emf->cellSize);
+                        prefs.Set("Simulation.EMField.Boundary", emf->boundaryMode);
                         prefs.Set("Simulation.EMField.SourceMode", emf->sourceMode);
                         prefs.Set("Simulation.EMField.Frequency", emf->frequency);
                         prefs.Set("Simulation.EMField.Aux", emf->aux);
@@ -478,6 +480,19 @@ void GameModel::SetEMCellSize(int cellSize)
         if (sim->emfOwner)
         {
                 sim->emfOwner->SetCellSize(cellSize);
+        }
+}
+
+int GameModel::GetEMBoundaryMode() const
+{
+        return sim->emfOwner ? sim->emfOwner->boundaryMode : EMBND_DEFAULT;
+}
+
+void GameModel::SetEMBoundaryMode(int boundaryMode)
+{
+        if (sim->emfOwner)
+        {
+                sim->emfOwner->SetBoundaryMode(boundaryMode);
         }
 }
 

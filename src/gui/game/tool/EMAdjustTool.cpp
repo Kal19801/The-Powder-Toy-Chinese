@@ -67,12 +67,12 @@ EMAdjustWindow::EMAdjustWindow(EMAdjustTool *tool_):
                 Update();
         } });
         AddComponent(property);
-        property->AddOption({ ByteString("电导率 Conductivity (0~1)").FromUtf8(), EMADJP_CONDUCT });
-        property->AddOption({ ByteString("磁导率 Permeability (0.05~32)").FromUtf8(), EMADJP_PERM });
-        property->AddOption({ ByteString("电流 Current (-2~2)").FromUtf8(), EMADJP_J });
-        property->AddOption({ ByteString("介电常数 Dielectric (1~191)").FromUtf8(), EMADJP_MEDIUM });
-        property->AddOption({ ByteString("磁方向 Mag Dir (0~360度)").FromUtf8(), EMADJP_MAG_DIR });
-        property->AddOption({ ByteString("磁强度 Mag Strength (0~2)").FromUtf8(), EMADJP_MAG_STR });
+        property->AddOption({ ByteString("电导率").FromUtf8(), EMADJP_CONDUCT });
+        property->AddOption({ ByteString("磁导率").FromUtf8(), EMADJP_PERM });
+        property->AddOption({ ByteString("电流").FromUtf8(), EMADJP_J });
+        property->AddOption({ ByteString("介电常数").FromUtf8(), EMADJP_MEDIUM });
+        property->AddOption({ ByteString("磁方向").FromUtf8(), EMADJP_MAG_DIR });
+        property->AddOption({ ByteString("磁强度").FromUtf8(), EMADJP_MAG_STR });
 
         applyMode = new ui::DropDown(ui::Point(8, 45), ui::Point(Size.X-16, 16));
         applyMode->SetActionCallback({ [this] {
@@ -80,8 +80,8 @@ EMAdjustWindow::EMAdjustWindow(EMAdjustTool *tool_):
         } });
         AddComponent(applyMode);
         applyMode->AddOption({ ByteString("设置模式:设为目标值").FromUtf8(), EMADJA_SET });
-        applyMode->AddOption({ ByteString("加法模式:加上目标值(0.2s/次)").FromUtf8(), EMADJA_ADD });
-        applyMode->AddOption({ ByteString("减法模式:减去目标值(0.2s/次)").FromUtf8(), EMADJA_SUB });
+        applyMode->AddOption({ ByteString("加法模式:加上目标值").FromUtf8(), EMADJA_ADD });
+        applyMode->AddOption({ ByteString("减法模式:减去目标值").FromUtf8(), EMADJA_SUB });
 
         textField = new ui::Textbox(ui::Point(8, 65), ui::Point(Size.X-16, 16), "", ByteString("[值]").FromUtf8());
         textField->Appearance.HorizontalAlign = ui::Appearance::AlignLeft;

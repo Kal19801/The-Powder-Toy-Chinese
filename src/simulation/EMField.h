@@ -92,6 +92,7 @@ public:
 
         bool enabled = false;
         int cellSize = EM_CELL_SIZE_DEFAULT; // EM cell edge in pixels
+        int boundaryMode = EMBND_DEFAULT;    // one of EmBoundaryMode
         int viewMode = EMVIEW_DEFAULT;       // one of EmViewMode, used by the renderer
         int sourceMode = EMSRC_DEFAULT;      // one of EmSourceMode
         float frequency = 10;                // source frequency parameter (applet forceBar, 1..40)
@@ -127,6 +128,10 @@ public:
                 // true when a ferromagnetic or superconducting (below Tc) powder sits
                 // in this cell; those feel magnetic pressure from the field
                 bool magpowder = false;
+                // true when a solid magnetic material (FE/PGRF/EMFM/EMDM, or a
+                // superconductor below Tc) sits in this cell; those feel the same
+                // magnetic pressure much more weakly than powders do
+                bool magsolid = false;
                 // manual overrides applied by the unified adjust tool
                 uint8_t ovMask = 0;
                 float ovConduct = 0, ovPerm = 0, ovJz = 0, ovMedium = 0, ovMag = 0;
@@ -139,6 +144,12 @@ public:
         };
 
         int gw = 0, gh = 0; // grid size in EM cells
+        // geometry of the boundary padding: the visible canvas maps to the grid
+        // rectangle [padL, padL+visW) x [padT, padT+visH). CLOSED/ABSORB use no
+        // padding, OPEN pads by the invisible absorber band, PERIODIC pads by a
+        // one cell ghost ring that is refreshed from the opposite edge each sub-step.
+        int padL = 0, padT = 0;
+        int visW = 0, visH = 0; // visible (playable) grid extent in EM cells
         std::vector<Cell> cells;
 
         // one entry per EMW particle found during the last sync
@@ -191,6 +202,8 @@ public:
         explicit EMField(Simulation & sim);
 
         void SetCellSize(int newCellSize); // reallocates and clears the grid
+        void SetBoundaryMode(int newMode); // reallocates and clears the grid for the new boundary geometry
+        void ApplyGridGeometry();          // derive gw/gh/pad/vis from cellSize + boundaryMode and reallocate
         void Clear();                      // resets the wave state, keeps materials (applet doClear)
         void ClearAll();                   // resets the wave state and all tool overrides (applet doClearAll); used when the simulation itself is reset
         void ClearOverrides();             // removes all tool overrides
@@ -201,12 +214,14 @@ public:
         void SyncMaterials();
         void CalcBoundaries();
         void SetDamping();
+        void RefreshGhostRing(); // PERIODIC boundary: copy the opposite edge into the ghost ring
         void SetupSources();
         void DoSources(double tadd, bool clear);
         void FilterGrid();
         void CollectRealCharges();
         void DepositRealCharges();
         void InteractParticles(int substep, int substeps);
+        void InteropParticles(); // once per frame: vanilla spark on contact, charge neutralisation
 
         double GetMagX(int gi) const;
         double GetMagY(int gi) const;

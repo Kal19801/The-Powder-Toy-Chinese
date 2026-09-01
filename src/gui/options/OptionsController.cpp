@@ -214,6 +214,11 @@ void OptionsController::SetEMCellSize(int cellSize)
         model->SetEMCellSize(cellSize);
 }
 
+void OptionsController::SetEMBoundaryMode(int boundaryMode)
+{
+        model->SetEMBoundaryMode(boundaryMode);
+}
+
 void OptionsController::SetEMSourceMode(int sourceMode)
 {
         model->SetEMSourceMode(sourceMode);

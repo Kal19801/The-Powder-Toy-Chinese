@@ -50,14 +50,45 @@ constexpr int   EM_MEDIUM_MAX      = 191;
 constexpr float EM_MEDIUM_MAX_INDEX = .5f;
 //EM wave sub-step count per frame, indexed by the speed setting (0 = half, 1 = normal, 2 = double);
 //see the rewritten current system constants below for the per-step timestep
-//allowed EM cell edge sizes in pixels; the EM grid is then XRES/size x YRES/size cells
-constexpr int EM_CELL_SIZES[] = { 2, 4, 8, 16 };
+//allowed EM cell edge sizes in pixels; the EM grid is then XRES/size x YRES/size cells;
+//size 1 gives a field on the exact particle grid (1 cell = 1 particle, full alignment)
+constexpr int EM_CELL_SIZES[] = { 1, 2, 4, 8, 16 };
 constexpr int EM_CELL_SIZE_COUNT = int(sizeof(EM_CELL_SIZES) / sizeof(EM_CELL_SIZES[0]));
 constexpr int EM_CELL_SIZE_DEFAULT = 4;
 //edge damping margin, in EM cells, scaled from the applet's fixed 20 cell margin at a 4px cell size
 constexpr int EM_MARGIN_AT_4 = 20;
 //scale of Joule heating applied to real conducting particles sitting in cells that carry induced current
 constexpr float EM_JOULE_HEAT = 2.0f;
+
+// --- EM boundary conditions (设置 -> 电磁场边界条件) ---------------------------
+enum EmBoundaryMode
+{
+        EMBND_CLOSED = 0,   // 封闭: perfectly conducting walls at the screen edge, full reflection
+        EMBND_ABSORB = 1,   // 吸收: applet-style exponential damping ramp on the visible screen edge
+        EMBND_OPEN   = 2,   // 开放: the absorber lives entirely in an invisible band OUTSIDE the
+                            // screen (grid padding), so the visible interior is unmodified vacuum
+        EMBND_PERIODIC = 3, // 循环: waves leaving one edge re-enter from the opposite edge (ghost ring)
+        EMBND_COUNT,
+};
+constexpr int EMBND_DEFAULT = EMBND_ABSORB;
+// absorption strength of the invisible padding band of the OPEN boundary; the
+// pad is never rendered so it can be aggressively absorbing without visual cost
+constexpr float EM_OPEN_RAMP = 0.012f;
+// maximum width of the invisible padding band in EM cells (keeps the padded grid
+// cheap at 1px cell size; 24 cells with EM_OPEN_RAMP attenuate a crossing wave
+// by a factor of e^24 in each direction, far below visibility)
+constexpr int EM_OPEN_PAD_MAX = 24;
+// current injected into the EM field by every powered vanilla spark (SPRK with
+// life > 0) sitting in a cell; this is the vanilla -> EM direction of the
+// current interop, a vanilla wire touching our materials excites our field
+constexpr float EM_SPRK_CURRENT = 0.5f;
+// conduction drift: real charges inside real-zone conductors are carried along
+// the wire by the local field (see EMField::InteractParticles); peak drift speed
+// in px per frame at full conductivity, clamped to the field propagation speed
+constexpr float EM_DRIFT_SPEED = 0.35f;
+// field-energy contrast over which the drift dead-band releases (keeps charges
+// from jittering on numerical noise inside an idle wire)
+constexpr float EM_DRIFT_NOISE = 1e-6f;
 
 // --- rewritten current system (real zone), extending EMWave2 -------------------
 // per-sub-step wave timestep, the exact value the applet integrates with
@@ -103,8 +134,14 @@ constexpr float EM_PROTON_MASS    = 1836.0f;
 // force of the in-plane B field (B = curl az) on a magnetic monopole, F = g B
 constexpr float EM_MONOPOLE_FORCE = 0.05f;
 // magnetic pressure on ferromagnetic / diamagnetic powders (iron filings vs
-// pyrolytic graphite); sign chosen by permeability below/above 1
-constexpr float EM_POWDER_FORCE   = 0.02f;
+// pyrolytic graphite); sign chosen by permeability below/above 1. Tuned against
+// powder gravity (~0.4 px/frame^2) so the pull of a magnet clearly wins close by
+// and decays like the field gradient further away.
+constexpr float EM_POWDER_FORCE   = 0.55f;
+constexpr float EM_POWDER_NORM    = 0.30f;
+// same mechanism, much milder, for solid magnetic materials (FE/PGRF/EMFM/EMDM):
+// blocks slowly slide instead of jumping, powders are the strong responders
+constexpr float EM_SOLID_FORCE    = 0.08f;
 // pairwise Coulomb is O(n^2); above this many real particles only the field
 // coupling is applied (still fully functional, just without charge-charge force)
 constexpr int   EM_PAIRWISE_LIMIT = 400;

@@ -210,47 +210,47 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
         }, [this] {
                 c->SetAirMode(airMode->GetOption().second);
         });
-        std::tie(ambientAirTemp, ambientAirTempPreview) = addTextboxWithPreview("Ambient air temperature", true, [this](String value, bool defocus) {
+        std::tie(ambientAirTemp, ambientAirTempPreview) = addTextboxWithPreview("环境温度", true, [this](String value, bool defocus) {
                 UpdateAirTemp(value, defocus);
         });
-        std::tie(edgePressure, edgePressurePreview) = addTextboxWithPreview("Ambient air pressure", true, [this](String value, bool defocus) {
+        std::tie(edgePressure, edgePressurePreview) = addTextboxWithPreview("环境气压", true, [this](String value, bool defocus) {
                 UpdateEdgePressure(value, defocus);
         });
         {
-                edgeVelocityChange = new ui::Button(ui::Point(Size.X-95, currentY), ui::Point(80, 16), "Change");
+                edgeVelocityChange = new ui::Button(ui::Point(Size.X-95, currentY), ui::Point(80, 16), "改变");
                 scrollPanel->AddChild(edgeVelocityChange);
                 edgeVelocityChange->SetActionCallback({ [this] {
-                        new DirectionSelector(ui::Point(-1, -1), 0.05f, 40, edgeVelocityX, edgeVelocityY, "Ambient air velocity", [this](float x, float y) {
+                        new DirectionSelector(ui::Point(-1, -1), 0.05f, 40, edgeVelocityX, edgeVelocityY, "空气流速", [this](float x, float y) {
                                 c->SetEdgeVelocityX(x);
                                 c->SetEdgeVelocityY(y);
                         });
                 } });
-                auto *label = new ui::Label(ui::Point(8, currentY), ui::Point(Size.X-96, 16), "Ambient air velocity");
+                auto *label = new ui::Label(ui::Point(8, currentY), ui::Point(Size.X-96, 16), "空气流速");
                 label->Appearance.HorizontalAlign = ui::Appearance::AlignLeft;
                 label->Appearance.VerticalAlign = ui::Appearance::AlignMiddle;
                 scrollPanel->AddChild(label);
                 currentY+=20;
         }
-        vorticityCoeff = addTextboxWithPreview("Vorticity confinement", false, [this](String value, bool defocus) {
+        vorticityCoeff = addTextboxWithPreview("涡度约束", false, [this](String value, bool defocus) {
                 UpdateVorticityCoeff(value, defocus);
         }).first;
-        convectionMode = addDropDown("Air heat convection mode", {
-                { "None", AIRC_NONE },
-                { "Legacy", AIRC_LEGACY },
-                { "Boussinesq", AIRC_BOUSSINESQ },
+        convectionMode = addDropDown("空气对流模式", {
+                { "默认", AIRC_NONE },
+                { "旧版", AIRC_LEGACY },
+                { "Boussinesq近似", AIRC_BOUSSINESQ },
         }, [this] {
                 c->SetConvectionMode(convectionMode->GetOption().second);
         });
-        gravityMode = addDropDown("Gravity simulation mode", {
-                { "Vertical", GRAV_VERTICAL },
-                { "Off", GRAV_OFF },
-                { "Radial", GRAV_RADIAL },
-                { "Custom", GRAV_CUSTOM },
+        gravityMode = addDropDown("重力模拟模式", {
+                { "垂直", GRAV_VERTICAL },
+                { "关闭", GRAV_OFF },
+                { "中心", GRAV_RADIAL },
+                { "自定义", GRAV_CUSTOM },
         }, [this] {
                 c->SetGravityMode(gravityMode->GetOption().second);
                 if (gravityMode->GetOption().second == 3)
                 {
-                        new DirectionSelector(ui::Point(-1, -1), 0.05f, 40, customGravityX, customGravityY, "Custom Gravity", [this](float x, float y) {
+                        new DirectionSelector(ui::Point(-1, -1), 0.05f, 40, customGravityX, customGravityY, "自定义重力", [this](float x, float y) {
                                 c->SetCustomGravityX(x);
                                 c->SetCustomGravityY(y);
                         });
@@ -375,16 +375,25 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
 
         // TM-mode EM field section (EMWave2 port)
         addSeparator();
-        emEnabled = addCheckbox(0, ByteString("电磁场模拟 \bg- TM模电磁波").FromUtf8(), ByteString("\bg 电磁场/真实区元素参与模拟:导体反射吸收,电介质折射,波可加热真实导体").FromUtf8(), [this] {
+        emEnabled = addCheckbox(0, ByteString("电磁场模拟 \bg- TM模电磁波").FromUtf8(), ByteString("\bg 电磁区元素参与模拟").FromUtf8(), [this] {
                 c->SetEMEnabled(emEnabled->GetChecked());
         });
         emCellSize = addDropDown(ByteString("电磁场网格大小").FromUtf8(), {
-                { ByteString("2 像素 (306x192)").FromUtf8(), 2 },
-                { ByteString("4 像素 (153x96)").FromUtf8(), 4 },
-                { ByteString("8 像素 (76x48)").FromUtf8(), 8 },
-                { ByteString("16 像素 (38x24)").FromUtf8(), 16 },
+                { ByteString("1 像素").FromUtf8(), 1 },
+                { ByteString("2 像素").FromUtf8(), 2 },
+                { ByteString("4 像素)").FromUtf8(), 4 },
+                { ByteString("8 像素").FromUtf8(), 8 },
+                { ByteString("16 像素").FromUtf8(), 16 },
         }, [this] {
                 c->SetEMCellSize(emCellSize->GetOption().second);
+        });
+        emBoundary = addDropDown(ByteString("电磁场边界条件").FromUtf8(), {
+                { ByteString("封闭").FromUtf8(), EMBND_CLOSED },
+                { ByteString("吸收").FromUtf8(), EMBND_ABSORB },
+                { ByteString("开放").FromUtf8(), EMBND_OPEN },
+                { ByteString("循环").FromUtf8(), EMBND_PERIODIC },
+        }, [this] {
+                c->SetEMBoundaryMode(emBoundary->GetOption().second);
         });
         emViewMode = addDropDown(ByteString("电磁场显示模式").FromUtf8(), {
                 { ByteString("关闭").FromUtf8(), EMVIEW_OFF },
@@ -871,6 +880,10 @@ void OptionsView::NotifySettingsChanged(OptionsModel * sender)
         if (emCellSize)
         {
                 emCellSize->SetOption(sender->GetEMCellSize());
+        }
+        if (emBoundary)
+        {
+                emBoundary->SetOption(sender->GetEMBoundaryMode());
         }
         if (emSourceMode)
         {

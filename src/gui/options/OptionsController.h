@@ -53,6 +53,7 @@ public:
         // TM-mode EM field settings (EMWave2 port)
         void SetEMEnabled(bool state);
         void SetEMCellSize(int cellSize);
+        void SetEMBoundaryMode(int boundaryMode);
         void SetEMSourceMode(int sourceMode);
         void SetEMFrequency(float frequency);
         void SetEMAux(float aux);

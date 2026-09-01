@@ -21,7 +21,7 @@
 #if EMFIELD_DEBUG
 #define EMF_DBG(...) std::fprintf(stderr, __VA_ARGS__)
 #else
-#define EMF_DBG(...) do { if (false) { std::fprintf(stderr, __VA_ARGS__); } } while (0)
+#define EMF_DBG(...) do {} while (0)
 #endif
 
 namespace
@@ -136,17 +136,72 @@ void EMField::SetCellSize(int newCellSize)
                 newCellSize = EM_CELL_SIZE_DEFAULT;
         }
         cellSize = newCellSize;
-        gw = std::max(8, XRES / cellSize);
-        gh = std::max(8, YRES / cellSize);
+        ApplyGridGeometry();
+}
+
+void EMField::SetBoundaryMode(int newMode)
+{
+        if (newMode < 0 || newMode >= EMBND_COUNT)
+        {
+                newMode = EMBND_DEFAULT;
+        }
+        if (newMode == boundaryMode)
+        {
+                return;
+        }
+        boundaryMode = newMode;
+        ApplyGridGeometry();
+}
+
+// Derive the full grid geometry from cellSize + boundaryMode and reallocate the
+// field. The visible canvas always maps to [padL, padL+visW) x [padT, padT+visH):
+// - CLOSED / ABSORB: grid == visible canvas, no padding at all (applet layout).
+// - OPEN: the grid is padded by an invisible absorber band on every side, so the
+//   absorbing layer sits entirely OUTSIDE the screen and the interior stays
+//   undamped vacuum while waves leave the visible area.
+// - PERIODIC: the grid is padded by a one cell ghost ring which is refreshed
+//   from the opposite edge every sub-step (true wrap-around without special-
+//   casing the wave update loops).
+// Reallocating resets the wave state, the same trade-off as changing cellSize.
+void EMField::ApplyGridGeometry()
+{
+        visW = std::max(8, XRES / cellSize);
+        visH = std::max(8, YRES / cellSize);
+        padL = 0;
+        padT = 0;
+        margin = 0;
+        switch (boundaryMode)
+        {
+        case EMBND_OPEN:
+        {
+                int pad = std::clamp(EM_MARGIN_AT_4 * EM_CELL_SIZE_DEFAULT / cellSize, 2, EM_OPEN_PAD_MAX);
+                padL = pad;
+                padT = pad;
+                margin = pad; // ramp width, applied inside the pad by SetDamping
+                break;
+        }
+        case EMBND_PERIODIC:
+                padL = 1;
+                padT = 1;
+                break;
+        case EMBND_ABSORB:
+                // applet-faithful ramp on the visible screen edge
+                margin = std::clamp(EM_MARGIN_AT_4 * EM_CELL_SIZE_DEFAULT / cellSize, 2, std::min(visW, visH) / 4);
+                break;
+        default: // EMBND_CLOSED: hard reflecting wall at the screen edge
+                break;
+        }
+        gw = visW + 2 * padL;
+        gh = visH + 2 * padT;
         cells.assign(gw * gh, Cell{});
-        margin = std::clamp(EM_MARGIN_AT_4 * EM_CELL_SIZE_DEFAULT / cellSize, 2, std::min(gw, gh) / 4);
         forceBarValue = frequency;
         forceTimeZero = 0;
         t = 0;
         filterCount = 0;
         SetupSources();
         SetDamping();
-        EMF_DBG("EMField: grid %dx%d cells (cell size %dpx, margin %d)\n", gw, gh, cellSize, margin);
+        EMF_DBG("EMField: grid %dx%d cells (cell size %dpx, boundary %d, pad %d, visible %dx%d, margin %d)\n",
+                gw, gh, cellSize, boundaryMode, padL, visW, visH, margin);
 }
 
 void EMField::Clear()
@@ -227,8 +282,8 @@ void EMField::VacuumCell(int gi)
 
 int EMField::CellIndex(int px, int py) const
 {
-        int cx = std::clamp(px / cellSize, 0, gw - 1);
-        int cy = std::clamp(py / cellSize, 0, gh - 1);
+        int cx = std::clamp(px / cellSize, 0, visW - 1) + padL;
+        int cy = std::clamp(py / cellSize, 0, visH - 1) + padT;
         return cx + cy * gw;
 }
 
@@ -267,6 +322,7 @@ void EMField::SyncMaterials()
                 cell.resonant = false;
                 cell.heatable = false;
                 cell.magpowder = false;
+                cell.magsolid = false;
         }
 
         auto &parts = sim.parts;
@@ -295,6 +351,15 @@ void EMField::SyncMaterials()
                         auto &cell = cells[CellIndex(int(p.x), int(p.y))];
                         cell.resonant = true;
                         cell.heatable = true; // resonant media dissipate absorbed energy
+                        continue;
+                }
+                // --- vanilla <-> EM current interop (vanilla -> EM direction) ---
+                // every powered vanilla spark injects current into its cell, so a
+                // live vanilla wire touching our materials excites our field and
+                // drives our currents exactly like an EMJP source would
+                if (p.type == PT_SPRK && p.life > 0)
+                {
+                        cells[CellIndex(int(p.x), int(p.y))].jzext += EM_SPRK_CURRENT;
                         continue;
                 }
                 // permanent magnets: the four dedicated direction elements, plus the
@@ -340,6 +405,7 @@ void EMField::SyncMaterials()
                                 cell.perm = ClampPerm(0.01f); // Meissner: B expelled
                                 cell.heatable = false;
                                 cell.magpowder = (p.type == PT_SCPW); // levitates over magnets
+                                cell.magsolid = (p.type == PT_SCND);  // solid Meissner body, mild push
                         }
                         else
                         {
@@ -376,6 +442,13 @@ void EMField::SyncMaterials()
                                 if (IsMagPowder(p.type, p.temp))
                                 {
                                         cell.magpowder = true;
+                                }
+                                // solid magnetic materials (FE/PGRF/EMFM/EMDM) get the weak
+                                // version of the same magnetic pressure force
+                                if (mat.perm != 1 && !IsMagPowder(p.type, p.temp) &&
+                                        (p.type == PT_FE || p.type == PT_PGRF || p.type == PT_EMFM || p.type == PT_EMDM))
+                                {
+                                        cell.magsolid = true;
                                 }
                         }
                         if (mat.perm != 1)
@@ -513,20 +586,65 @@ void EMField::SetDamping()
                         cell.damp = .99; // need this to avoid reflections in dielectrics
                 }
         }
-        // exponential absorbing ramp on all four edges, like the applet's hidden margin
-        for (int i = 0; i < margin; i++)
+        if (boundaryMode == EMBND_ABSORB)
         {
-                double da = std::exp(-(margin - i) * .002);
-                for (int x = 0; x < gw; x++)
+                // exponential absorbing ramp on all four visible edges, like the
+                // applet's hidden margin; the ramp sits INSIDE the screen
+                for (int i = 0; i < margin; i++)
                 {
-                        cells[x + i * gw].damp = da;
-                        cells[x + (gh - 1 - i) * gw].damp = da;
+                        double da = std::exp(-(margin - i) * .002);
+                        for (int x = 0; x < gw; x++)
+                        {
+                                cells[x + i * gw].damp = da;
+                                cells[x + (gh - 1 - i) * gw].damp = da;
+                        }
+                        for (int y = 0; y < gh; y++)
+                        {
+                                cells[i + y * gw].damp = da;
+                                cells[(gw - 1 - i) + y * gw].damp = da;
+                        }
                 }
-                for (int y = 0; y < gh; y++)
+        }
+        else if (boundaryMode == EMBND_OPEN)
+        {
+                // the absorber lives entirely in the invisible padding band, the
+                // visible interior stays damp = 1 (undamped vacuum); the stronger
+                // ramp is affordable because the band is never rendered
+                for (int i = 0; i < margin; i++)
                 {
-                        cells[i + y * gw].damp = da;
-                        cells[(gw - 1 - i) + y * gw].damp = da;
+                        double da = std::exp(-(margin - i) * EM_OPEN_RAMP);
+                        for (int x = 0; x < gw; x++)
+                        {
+                                cells[x + i * gw].damp = da;
+                                cells[x + (gh - 1 - i) * gw].damp = da;
+                        }
+                        for (int y = 0; y < gh; y++)
+                        {
+                                cells[i + y * gw].damp = da;
+                                cells[(gw - 1 - i) + y * gw].damp = da;
+                        }
                 }
+        }
+        // EMBND_CLOSED and EMBND_PERIODIC: no damping ramp at all; closed reflects
+        // at the hard wall (never-updated outer ring), periodic wraps through the
+        // ghost ring
+}
+
+void EMField::RefreshGhostRing()
+{
+        // PERIODIC boundary: copy the opposite edge into the ghost ring so the
+        // interior update loops (1..gw-2) see true wrap-around neighbours. Both
+        // az and dazdt are copied so the wave crosses the seam seamlessly.
+        for (int j = 0; j < gh; j++)
+        {
+                int row = j * gw;
+                cells[row] = cells[row + gw - 2];
+                cells[row + gw - 1] = cells[row + 1];
+        }
+        for (int i = 0; i < gw; i++)
+        {
+                cells[i] = cells[i + (gh - 2) * gw];
+                cells[i + (gh - 1) * gw] = cells[i + gw];
         }
 }
 
@@ -566,22 +684,25 @@ void EMField::SetupSources()
         }
         if (sourcePlane)
         {
-                // plane sources are drawn between pairs of corner points
+                // plane sources are drawn between pairs of corner points of the
+                // VISIBLE area, inset by one cell from the innermost usable ring
                 sourceCount *= 2;
-                int x2 = gw - margin - 1;
-                int y2 = gh - margin - 1;
-                sources[0] = { margin, margin };
-                sources[1] = { x2, margin };
-                sources[2] = { margin, y2 };
+                int inset = (boundaryMode == EMBND_ABSORB) ? margin : 1;
+                int x2 = padL + visW - inset - 1;
+                int y2 = padT + visH - inset - 1;
+                sources[0] = { padL + inset, padT + inset };
+                sources[1] = { x2, padT + inset };
+                sources[2] = { padL + inset, y2 };
                 sources[3] = { x2, y2 };
         }
         else
         {
-                // point sources sit around the centre of the canvas
-                sources[0] = { gw / 2, margin + 1 };
-                sources[1] = { gw / 2, gh - margin - 2 };
-                sources[2] = { margin + 1, gh / 2 };
-                sources[3] = { gw - margin - 2, gh / 2 };
+                // point sources sit around the centre of the visible canvas
+                int inset = (boundaryMode == EMBND_ABSORB) ? margin : 1;
+                sources[0] = { padL + visW / 2, padT + inset + 1 };
+                sources[1] = { padL + visW / 2, padT + visH - inset - 2 };
+                sources[2] = { padL + inset + 1, padT + visH / 2 };
+                sources[3] = { padL + visW - inset - 2, padT + visH / 2 };
         }
         forceBarValue = frequency;
         forceTimeZero = 0;
@@ -941,6 +1062,80 @@ void EMField::InteractParticles(int substep, int substeps)
                         p.vx *= vmax / sp;
                         p.vy *= vmax / sp;
                 }
+                // conduction drift: inside a real-zone conductor the charge is
+                // carried ALONG the wire by the local current, the EMWave2 jz
+                // mechanism made directional. This is what makes our current
+                // actually conduct: a charge entering one end of a copper wire
+                // slides along it instead of rattling in place, and reaches the
+                // other end where it can meet an opposite carrier or hand the
+                // current over to a vanilla circuit. Monopoles do not ride wires.
+                if (q != 0 && cells[gi].conductivity > 0)
+                {
+                        auto &cell = cells[gi];
+                        // local wire tangent from conductor occupancy of the 4-neighbourhood
+                        int cl = cells[gi - 1].conductivity > 0;
+                        int cr = cells[gi + 1].conductivity > 0;
+                        int cu = cells[gi - gw].conductivity > 0;
+                        int cd = cells[gi + gw].conductivity > 0;
+                        float tx = 0, ty = 0;
+                        if (cl && cr) tx = 1;
+                        else if (cu && cd) ty = 1;
+                        else if (cl) tx = -1;
+                        else if (cr) tx = 1;
+                        else if (cu) ty = -1;
+                        else if (cd) ty = 1;
+                        if (tx != 0 || ty != 0)
+                        {
+                                // drive 1 (preferred): the field-intensity gradient along the
+                                // wire - carriers are dragged away from the strong field side,
+                                // i.e. away from whatever feeds the wire. Three intensities are
+                                // summed because each carries the information in a different
+                                // regime: |E|^2 (vacuum / weak conductors), |B|^2 (B penetrates
+                                // conductors where E is screened) and the wire's own induced
+                                // |jz|^2 (strongest right where the wire is fed). All three are
+                                // sign-less so the direction stays steady for AC, DC and ringing.
+                                double eL = cells[gi - 1].dazdt, eR = cells[gi + 1].dazdt;
+                                double eU = cells[gi - gw].dazdt, eD = cells[gi + gw].dazdt;
+                                auto b2f = [this](int gg) {
+                                        double dx = cells[gg - gw].az - cells[gg + gw].az;
+                                        double dy = cells[gg + 1].az - cells[gg - 1].az;
+                                        return dx * dx + dy * dy;
+                                };
+                                double jL = cells[gi - 1].jz + cells[gi - 1].jzext;
+                                double jR = cells[gi + 1].jz + cells[gi + 1].jzext;
+                                double jU = cells[gi - gw].jz + cells[gi - gw].jzext;
+                                double jD = cells[gi + gw].jz + cells[gi + gw].jzext;
+                                double along = ((eR * eR - eL * eL) * tx + (eD * eD - eU * eU) * ty) * .5
+                                             + ((b2f(gi + 1) - b2f(gi - 1)) * tx + (b2f(gi + gw) - b2f(gi - gw)) * ty) * .5
+                                             + ((jR * jR - jL * jL) * tx + (jD * jD - jU * jU) * ty) * .5;
+                                double drift = 0;
+                                if (along > EM_DRIFT_NOISE || along < -EM_DRIFT_NOISE)
+                                {
+                                        drift = -std::clamp(along * 40.0, -1.0, 1.0);
+                                }
+                                else
+                                {
+                                        // drive 2 (fallback): the local conduction current itself
+                                        // (external source or induced) sets the flow direction when
+                                        // no usable gradient exists along the wire
+                                        double drive = cell.jz + cell.jzext;
+                                        if (std::abs(drive) > 1e-3)
+                                        {
+                                                drift = std::clamp(drive, -1.0, 1.0);
+                                        }
+                                }
+                                if (drift != 0)
+                                {
+                                        float vdrift = float(drift) * EM_DRIFT_SPEED * cell.conductivity;
+                                        // protons steer more sluggishly than electrons
+                                        float blend = (q > 0) ? 0.35f : 1.0f;
+                                        float nvx = p.vx * (1 - blend) + tx * vdrift * blend;
+                                        float nvy = p.vy * (1 - blend) + ty * vdrift * blend;
+                                        p.vx = std::clamp(nvx, -vmax, vmax);
+                                        p.vy = std::clamp(nvy, -vmax, vmax);
+                                }
+                        }
+                }
         }
 
         // pairwise Coulomb between the tracked charges (Newton's third law
@@ -985,15 +1180,22 @@ void EMField::InteractParticles(int substep, int substeps)
         {
                 // once per frame: magnetic pressure on ferromagnetic / diamagnetic
                 // powders (iron filings pull toward magnets, pyrolytic graphite and
-                // superconductors are pushed away) and Joule heating of the real
-                // conductors carrying induced current
+                // superconductors are pushed away; solid magnetic materials respond
+                // much more weakly) and Joule heating of the real conductors
+                // carrying induced current
                 for (int cy = 1; cy < gh - 1; cy++)
                 {
                         for (int cx = 1; cx < gw - 1; cx++)
                         {
                                 int gi = cx + cy * gw;
                                 auto &cell = cells[gi];
-                                if (cell.magpowder)
+                                int px0 = (cx - padL) * cellSize;
+                                int py0 = (cy - padT) * cellSize;
+                                if (px0 < 0 || py0 < 0 || px0 >= XRES || py0 >= YRES)
+                                {
+                                        continue; // padding band outside the visible canvas
+                                }
+                                if (cell.magpowder || cell.magsolid)
                                 {
                                         auto b2f = [this](int gg) {
                                                 double dx = cells[gg - gw].az - cells[gg + gw].az;
@@ -1004,13 +1206,9 @@ void EMField::InteractParticles(int substep, int substeps)
                                         double gx = (b2f(gi + 1) - b2f(gi - 1)) * 0.5;
                                         double gy = (b2f(gi + gw) - b2f(gi - gw)) * 0.5;
                                         // ferromagnets (perm > 1) move up the gradient of the
-                                        // field energy, diamagnets (perm < 1) down it; the
-                                        // soft normalisation keeps the force scale invariant
+                                        // field energy, diamagnets (perm < 1) down it; the normaliser
+                                        // keeps the force bounded while decaying like 1/L far away
                                         double sign = cell.perm > 1 ? 1.0 : -1.0;
-                                        float fx = float(gx * sign * EM_POWDER_FORCE / (std::abs(e2) + 0.05));
-                                        float fy = float(gy * sign * EM_POWDER_FORCE / (std::abs(e2) + 0.05));
-                                        int px0 = cx * cellSize;
-                                        int py0 = cy * cellSize;
                                         for (int sy = 0; sy < cellSize; sy++)
                                         {
                                                 for (int sx = 0; sx < cellSize; sx++)
@@ -1018,15 +1216,24 @@ void EMField::InteractParticles(int substep, int substeps)
                                                         int px = std::min(px0 + sx, XRES - 1);
                                                         int py = std::min(py0 + sy, YRES - 1);
                                                         int r = sim.pmap[py][px];
-                                                        if (r)
+                                                        if (!r)
                                                         {
-                                                                auto &p = parts.data[ID(r)];
-                                                                if (IsMagPowder(p.type, p.temp))
-                                                                {
-                                                                        p.vx += std::clamp(fx, -0.3f, 0.3f);
-                                                                        p.vy += std::clamp(fy, -0.3f, 0.3f);
-                                                                }
+                                                                continue;
                                                         }
+                                                        auto &p = parts.data[ID(r)];
+                                                        bool powder = IsMagPowder(p.type, p.temp);
+                                                        bool solid = p.type == PT_FE || p.type == PT_PGRF ||
+                                                                     p.type == PT_EMFM || p.type == PT_EMDM ||
+                                                                     (p.type == PT_SCND && p.temp < EM_SC_TC);
+                                                        if (!powder && !solid)
+                                                        {
+                                                                continue;
+                                                        }
+                                                        float scale = powder ? EM_POWDER_FORCE : EM_SOLID_FORCE;
+                                                        float fx = float(gx * sign * scale / (std::abs(e2) + EM_POWDER_NORM));
+                                                        float fy = float(gy * sign * scale / (std::abs(e2) + EM_POWDER_NORM));
+                                                        p.vx += std::clamp(fx, -0.8f, 0.8f);
+                                                        p.vy += std::clamp(fy, -0.8f, 0.8f);
                                                 }
                                         }
                                 }
@@ -1065,6 +1272,87 @@ void EMField::InteractParticles(int substep, int substeps)
         }
 }
 
+// Once per frame, after the wave sub-steps: carrier neutralisation and the
+// EM -> vanilla direction of the current interop.
+//
+// a) an opposite carrier pair meeting in the same spot annihilates (charge is
+//    conserved: +1 and -1 vanish together);
+// b) a real charge touching a vanilla conductor sparks it, handing the current
+//    over to the vanilla conduction system - from there the spark propagates
+//    and interacts exactly like any vanilla spark, so our current can do
+//    everything a vanilla current can do. Particle indices are stable here
+//    (kill_part uses a free list), so batch operations are safe.
+void EMField::InteropParticles()
+{
+        auto &sd = SimulationData::CRef();
+        auto &elements = sd.elements;
+        auto &parts = sim.parts;
+
+        // a) neutralisation over the tracked charges (bounded work); untracked
+        //    charges simply never neutralise, like beyond the pairwise limit
+        for (size_t a = 0; a + 1 < realCharges.size(); a++)
+        {
+                auto &ra = realCharges[a];
+                if (parts.data[ra.i].type == PT_NONE)
+                {
+                        continue;
+                }
+                for (size_t b = a + 1; b < realCharges.size(); b++)
+                {
+                        auto &rb = realCharges[b];
+                        if (parts.data[rb.i].type == PT_NONE)
+                        {
+                                continue;
+                        }
+                        bool opposite = (ra.q * rb.q < 0) || (ra.g * rb.g < 0);
+                        if (!opposite)
+                        {
+                                continue;
+                        }
+                        float ddx = ra.x - rb.x;
+                        float ddy = ra.y - rb.y;
+                        if (ddx * ddx + ddy * ddy > 2.0f)
+                        {
+                                continue;
+                        }
+                        sim.kill_part(ra.i);
+                        sim.kill_part(rb.i);
+                        break;
+                }
+        }
+
+        // b) EM -> vanilla: spark a vanilla conductor on contact
+        for (int i = 0; i < parts.active; ++i)
+        {
+                auto &p = parts.data[i];
+                if (p.type != PT_RPRO && p.type != PT_RELC)
+                {
+                        continue; // electric carriers only
+                }
+                int px = int(p.x + 0.5f);
+                int py = int(p.y + 0.5f);
+                if (px < 0 || py < 0 || px >= XRES || py >= YRES)
+                {
+                        continue;
+                }
+                unsigned r = sim.pmap[py][px];
+                if (!r)
+                {
+                        continue;
+                }
+                int ri = ID(r);
+                int tt = parts.data[ri].type;
+                if (tt == PT_NONE || tt == PT_SPRK || !(elements[tt].Properties & PROP_CONDUCTS))
+                {
+                        continue;
+                }
+                // vanilla spark conversion, exactly like the photoelectric effect
+                parts.data[ri].ctype = tt;
+                sim.part_change_type(ri, px, py, PT_SPRK);
+                parts.data[ri].life = 4;
+        }
+}
+
 void EMField::Update()
 {
         if (!enabled)
@@ -1085,6 +1373,13 @@ void EMField::Update()
 
         for (int substep = 0; substep < substeps; substep++)
         {
+                // PERIODIC boundary: refresh the ghost ring from the opposite edge
+                // before every sub-step so the interior loops see wrap-around
+                if (boundaryMode == EMBND_PERIODIC)
+                {
+                        RefreshGhostRing();
+                }
+
                 DoSources(tadd, false);
 
                 // --- first pass: update dazdt from the neighbours (ported from EMWave2) ---
@@ -1186,6 +1481,10 @@ void EMField::Update()
                 }
 #endif
         }
+
+        // once per frame: the EM -> vanilla direction of the current interop and
+        // carrier neutralisation
+        InteropParticles();
 
 #if EMFIELD_DEBUG
         double energy = 0;

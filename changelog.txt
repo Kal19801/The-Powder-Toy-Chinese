@@ -1,6 +1,37 @@
-# This file is used by the starcatcher.us update server to pull changelogs for mod releases
-# Erase and replace the changelog for every release, do not just append changes to the end
-# Lines starting with # and empty lines are ignored
+v1.1.0 - EM wave II: rewritten current system, EM and real zone categories
+- New "电磁场" (EM field) element category with the full EMWave2 painting mode set as elements:
+  Perf./Good/Fair Conductor (EMPC/EMEC/EMFC), Current (+/-) (EMJP/EMJN), Ferromagnet (EMFM),
+  Diamagnet (EMDM), Dielectric (EMDE), Magnet Down/Up/Left/Right (EMMGD/EMMGU/EMMGL/EMMGR),
+  Resonant Medium (EMR) and the EMW wave source
+- New unified PROP-like EM adjust tool (EMADJ) with six properties (conductivity / permeability /
+  current / dielectric / magnet direction / magnet strength) and three application modes:
+  set, add and subtract at 0.2s intervals; replaces the six separate EMAJ*/EMMD tools
+- New "真实区" (real zone) category: real proton (RPRO, 1836 electron masses), real electron
+  (RELC) and magnetic monopole (RMON) as the current carriers of the rewritten current system
+- Real zone materials: iron (FE), titanium (TI), copper (CU), silver (AG), superconductor
+  (SCND, quenches above 93K) and pyrolytic graphite (PGRF) plus all six powder forms
+  (FEPW/TIPW/CUPW/AGPW/SCPW/PGPW) with field interactions (iron filings line up,
+  diamagnetic levitation, Meissner expulsion, Joule heating, melting)
+- Rewritten current system on the EMWave2 mechanism: moving real charges deposit current
+  along their path (J = q v delta(x)); monopoles inject magnetic current driving dazdt;
+  the original TPT current (SPRK/ELEC sources) is no longer used by the field
+- Anti-FTL: real particle velocity is strictly clamped to the field propagation speed
+  (max group velocity tadd/2 cells per sub-step) and the wave integrates in fixed
+  sub-steps of the exact applet timestep, which keeps the CFL bound perm <= 32 satisfied
+  and removes the ferromagnet self-excitation divergence
+- All modifications to original elements reverted: METL/GLAS/IRON/SPRK/ELEC and friends
+  no longer participate in the EM field and keep their vanilla behaviour
+- EMCLR now only clears the EM field state and never deletes particles; matter is removed
+  with the normal eraser like before
+- Fixed erased conductors leaving an invisible radiating current blob behind: induced
+  cell currents drop with their conductor and dormant tool overrides are wiped when a
+  cell loses its material
+- Field simulation resets together with the pressure system: = resets both, clear_sim
+  and every save load wipe all EM state (no more cross-save leaks)
+- Energy conservation hardening: CFL-proven sub-stepping, bounded current injection,
+  wave state safety clamp (never engages, tracked in debug builds)
+- Debug blocks kept behind EMFIELD_DEBUG (EMField tracing + EMSelfTest with divergence
+  soak tests); compiled out of release builds
 v1.0.3 - i18n: Multi-language support and Chinese localization
 - Introduced multi-language framework (Localization) with JSON key-value translations
 - Supports 12 languages: en-US, zh-CN, zh-TW, de-DE, es-ES, fr-FR, it-IT, ja-JP, ko-KR, pt-BR, ru-RU, lzh
