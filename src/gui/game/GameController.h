@@ -189,6 +189,7 @@ public:
 	int Record(bool record);
 
 	void ResetAir();
+	void ResetEMField();
 	void ResetSpark();
 	void SwitchGravity();
 	void SwitchAir();

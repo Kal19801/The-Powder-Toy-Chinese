@@ -11,7 +11,7 @@ void Element::Element_EMR()
 	Name = "EMR";
 	Colour = 0xFFBF80_rgb;
 	MenuVisible = 1;
-	MenuSection = SC_ELEC;
+	MenuSection = SC_EM;
 	Enabled = 1;
 
 	Advection = 0.0f;

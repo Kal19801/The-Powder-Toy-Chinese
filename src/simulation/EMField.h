@@ -7,17 +7,20 @@
 class Simulation;
 struct Particle;
 
-// EM cell material override bits, set by the EM adjustment tools; the override only
-// applies while the underlying particles still provide a matching material, just like
-// the adjust modes of the original applet only affect cells of the matching type.
+// EM cell material override bits, set by the unified EM adjust tool; the
+// override only applies while the underlying particles still provide a matching
+// material, just like the adjust modes of the original applet only affect cells
+// of the matching type. Overrides are wiped again as soon as a cell loses its
+// underlying material, so nothing leaks after the particles are erased.
 constexpr uint8_t EM_OV_CONDUCT = 1 << 0; // conductivity of conductors
 constexpr uint8_t EM_OV_PERM    = 1 << 1; // permeability of ferromagnets
-constexpr uint8_t EM_OV_JZ      = 1 << 2; // magnitude of external current sources
+constexpr uint8_t EM_OV_JZ      = 1 << 2; // magnitude/sign of current sources
 constexpr uint8_t EM_OV_MEDIUM  = 1 << 3; // dielectric constant of dielectrics
 constexpr uint8_t EM_OV_MAGSTR  = 1 << 4; // strength of permanent magnets
 constexpr uint8_t EM_OV_MAGDIR  = 1 << 5; // direction of permanent magnets (angle = value * 2pi)
 
-// the six separate adjust modes of the applet (MODE_ADJ_*); used by the EMAJ* tools
+// the five non-directional adjust modes of the applet (MODE_ADJ_*), kept for
+// the applet-faithful ApplyAdjustMode() port
 enum EmAdjustMode
 {
         EMADJM_CONDUCT = 0, // MODE_ADJ_CONDUCT
@@ -41,13 +44,47 @@ enum EmCellType
         EMCT_CURRENT,
 };
 
-// TM-mode electrodynamics (EM wave) simulation, a faithful port of Paul Falstad's
-// EMWave2 applet (http://www.falstad.com/emwave/). The field lives on a coarse grid
-// covering the whole TPT canvas; the material properties of each cell are derived
-// every frame from the TPT particles it covers, so original elements interact with
-// the field: metals reflect and absorb waves, glass refracts them, sparks and EM
-// sources radiate, waves heat conductors, exert magnetic pressure on ferromagnetic
-// particles and can induce sparks in antennas.
+// the six adjustable EM properties of the unified adjust tool; the order is
+// the order of the property dropdown of the tool (persisted in prefs)
+enum EmAdjustProperty
+{
+        EMADJP_CONDUCT = 0, // conductivity 0..1 (conductors)
+        EMADJP_PERM,        // permeability EM_PERM_MIN..EM_PERM_MAX (ferromagnets)
+        EMADJP_J,           // current -EM_JZEXT_MAX..+EM_JZEXT_MAX (current sources)
+        EMADJP_MEDIUM,      // dielectric constant 0..EM_MEDIUM_MAX (dielectrics)
+        EMADJP_MAG_DIR,     // magnetization direction 0..1 (fraction of 2pi)
+        EMADJP_MAG_STR,     // magnetization strength 0..2
+        EMADJP_COUNT,
+};
+
+// application modes of the unified adjust tool
+enum EmAdjustApply
+{
+        EMADJA_SET = 0, // set the value under the brush to the target
+        EMADJA_ADD,     // add the target to the value under the brush, every 0.2s
+        EMADJA_SUB,     // subtract the target from the value under the brush, every 0.2s
+};
+
+// TM-mode electrodynamics (EM wave) simulation, a port of Paul Falstad's
+// EMWave2 applet (http://www.falstad.com/emwave/). The field lives on a coarse
+// grid covering the whole TPT canvas; the material properties of each cell are
+// derived every frame from the TPT particles it covers.
+//
+// The current system has been rewritten around the EMWave2 mechanism: the only
+// currents are the ones the applet understands (external sources driving the
+// wave equation and induced currents inside conductors), carried exclusively by
+// the dedicated EM / real zone elements. Original TPT elements are NOT mapped
+// onto the field anymore and keep their vanilla behaviour. Real charged
+// particles (protons, electrons, magnetic monopoles) inject current into the
+// cells they cross, the EMWave2 jz mechanism extended from static sources to
+// moving charges; their speed is clamped to the field propagation speed so no
+// current is ever deposited outside the light cone (CFL), which is what used
+// to drive the ferromagnet self-excitation divergence in the old version.
+//
+// The wave is integrated in fixed sub-steps of EM_TADD_SUB (the exact applet
+// timestep), {1,2,4} of them per frame depending on the speed setting, which
+// keeps the CFL bound 2/tadd^2 = 32 on the permeability contrast satisfied for
+// every speed setting and conserves energy in the linear regime.
 class EMField
 {
 public:
@@ -76,11 +113,21 @@ public:
                 bool resonant = false;
                 bool boundary = false;   // cell sits at a material boundary
                 bool gray = false;       // cell carries any material
-                // external current injected this frame (sparks, electrons, EM sources, tools)
+                // external current injected this frame (EM elements, real particles, tools)
                 double jzext = 0;
-                // induced current inside conductors (applet jz semantics)
+                // magnetic current injected by moving monopoles this frame; drives
+                // dazdt directly, the dual of how jz drives the wave equation
+                double jmext = 0;
+                // induced current inside conductors (applet jz semantics); only
+                // meaningful while the cell carries a conductor or a resonant medium
                 double jz = 0;
-                // manual overrides applied by tools
+                // true when a real zone conductor that actually resists (everything
+                // but superconductors below Tc) sits in this cell; only those heat up
+                bool heatable = false;
+                // true when a ferromagnetic or superconducting (below Tc) powder sits
+                // in this cell; those feel magnetic pressure from the field
+                bool magpowder = false;
+                // manual overrides applied by the unified adjust tool
                 uint8_t ovMask = 0;
                 float ovConduct = 0, ovPerm = 0, ovJz = 0, ovMedium = 0, ovMag = 0;
                 float ovDir = 0; // magnetization direction, angle = value * 2pi
@@ -103,6 +150,20 @@ public:
         };
         std::vector<EmwSource> emwSources;
 
+        // real particles found during the last sync (rewritten current system)
+        struct RealCharge
+        {
+                int i;        // particle index
+                float q;      // signed electric charge (proton +1, electron -1)
+                float g;      // signed magnetic charge (monopole, 0 otherwise)
+                float mass;   // relative mass (proton 1836, electron 1)
+                int gi;       // cell the particle currently sits in
+                float x, y;   // pixel position
+                float vx, vy; // velocity (px per frame), already CFL-clamped
+        };
+        std::vector<RealCharge> realCharges;
+        int realChargeCount = 0; // total number of real particles last sync
+
         // applet source bookkeeping
         struct Source
         {
@@ -122,6 +183,11 @@ public:
         int filterCount = 0;
         int margin = EM_MARGIN_AT_4; // absorbing edge width in cells
 
+        // debug counters, only meaningful with EMFIELD_DEBUG; the release build
+        // keeps the memory (a few ints) but never reads them
+        long long fieldClampHits = 0;
+        long long jzClampHits = 0;
+
         explicit EMField(Simulation & sim);
 
         void SetCellSize(int newCellSize); // reallocates and clears the grid
@@ -138,7 +204,9 @@ public:
         void SetupSources();
         void DoSources(double tadd, bool clear);
         void FilterGrid();
-        void InteractParticles();
+        void CollectRealCharges();
+        void DepositRealCharges();
+        void InteractParticles(int substep, int substeps);
 
         double GetMagX(int gi) const;
         double GetMagY(int gi) const;
@@ -148,7 +216,22 @@ public:
         static int CellTypeOf(const Cell &oe); // applet OscElement::getType()
 
         // helpers used by the EM tools
-        bool ApplyAdjust(int gi, float strength); // combined adjust: picks the applet mode from the cell type
+        bool ApplyAdjust(int gi, float strength); // legacy combined adjust, picks the applet mode from the cell type
         bool ApplyMagDir(int gi, float strength); // applet MODE_ADJ_MAG_DIR equivalent
         bool ApplyAdjustMode(int mode, int gi, float strength); // one specific applet MODE_ADJ_* mode
+
+        // unified adjust tool: one EMADJP_* property, one EMADJA_* apply mode and
+        // the target value; ADD/SUB accumulate onto the effective value of the
+        // cell, SET assigns the target; returns true when anything was changed
+        bool ApplyEMProperty(int property, int applyMode, int gi, float value);
+
+        // effective (override-aware) value of one cell property, used by ADD/SUB
+        float EffectiveProperty(int property, int gi) const;
+
+        // max real particle speed in px per frame, derived from the field
+        // propagation speed so particles can never outrun the field
+        float MaxParticleSpeed() const
+        {
+                return EM_CELLS_PER_SUBSTEP * cellSize * float(EM_SUBSTEPS[speed < 0 || speed > 2 ? 1 : speed]);
+        }
 };

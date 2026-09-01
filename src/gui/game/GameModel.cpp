@@ -36,6 +36,7 @@
 #include "gui/game/tool/ElementTool.h"
 #include "gui/game/tool/GOLTool.h"
 #include "gui/game/tool/PropertyTool.h"
+#include "gui/game/tool/EMAdjustTool.h"
 #include "gui/game/tool/SampleTool.h"
 #include "gui/game/tool/SignTool.h"
 #include "gui/game/tool/WallTool.h"
@@ -2080,6 +2081,7 @@ void GameModel::InitTools()
         AllocTool(std::make_unique<DecorationTool>(view, DECO_CLEAR   , "CLR" , ByteString("清除工具,清除任何设置的装饰").FromUtf8()                     , 0x000000_rgb, "DEFAULT_DECOR_CLR" ));
         AllocTool(std::make_unique<DecorationTool>(view, DECO_DRAW    , "SET" , ByteString("绘制工具,绘制装饰（无混合）").FromUtf8()                , 0x000000_rgb, "DEFAULT_DECOR_SET" ));
         AllocTool(std::make_unique<PropertyTool>(*this));
+        AllocTool(std::make_unique<EMAdjustTool>(*this));
         AllocTool(std::make_unique<SignTool>(*this));
         AllocTool(std::make_unique<SampleTool>(*this));
         AllocTool(std::make_unique<GOLTool>(*this));

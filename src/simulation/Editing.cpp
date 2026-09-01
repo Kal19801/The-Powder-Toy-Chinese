@@ -361,8 +361,10 @@ int Simulation::CreatePartFlags(int p, int x, int y, int c, int flags)
                 return 0;
         }
         // Erasing particles must also drop the EM material overrides of the cell
-        // underneath (EMADJ/EMMD results), otherwise the erase tool cannot undo
-        // what the EM tools painted and adjustments survive erasing forever.
+        // underneath (unified EM adjust tool results), otherwise the erase tool
+        // cannot undo what the EM tools painted and adjustments survive erasing
+        // forever. SyncMaterials additionally drops the induced current of cells
+        // whose conductor disappeared, so no invisible EM residue stays behind.
         auto eraseEmOverrides = [this, x, y]() {
                 if (emf)
                 {

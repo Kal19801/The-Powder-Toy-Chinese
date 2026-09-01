@@ -13,8 +13,8 @@ void Element::Element_EMMG()
         Identifier = "DEFAULT_PT_EMMG";
         Name = "EMMG";
         Colour = 0xC060E0_rgb;
-        MenuVisible = 1;
-        MenuSection = SC_ELEC;
+        MenuVisible = 0; // replaced by the four EMMGD/EMMGU/EMMGL/EMMGR elements; kept working for old saves
+        MenuSection = SC_EM;
         Enabled = 1;
 
         Advection = 0.0f;

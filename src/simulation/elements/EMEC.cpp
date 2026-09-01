@@ -1,17 +1,27 @@
 #include "simulation/ElementCommon.h"
+#include "simulation/EMField.h"
 
-// EMW: EM wave source, ported from the sources of Paul Falstad's EMWave2 applet.
-// Radiates a TM-mode wave into the EM field at the frequency set in the settings;
-// .tmp overrides that frequency (1..40), .ctype selects the waveform (0 = sine,
-// 1 = wave packet). The element itself is static; the field does the radiating.
+// Static field-material element; the TM-mode EM field simulation (EMField)
+// derives its cell properties from this element every frame. The element
+// itself has no particle physics - the field does the work, exactly like the
+// corresponding painting mode of Paul Falstad's EMWave2 applet.
 
 static void create(ELEMENT_CREATE_FUNC_ARGS);
-
-void Element::Element_EMW()
+static void create(ELEMENT_CREATE_FUNC_ARGS)
 {
-        Identifier = "DEFAULT_PT_EMW";
-        Name = "EMW";
-        Colour = 0xC0C0FF_rgb;
+        // placing any electromagnetic element enables the field simulation,
+        // otherwise freshly drawn material would silently do nothing
+        if (sim->emfOwner)
+        {
+                sim->emfOwner->enabled = true;
+        }
+}
+
+void Element::Element_EMEC()
+{
+        Identifier = "DEFAULT_PT_EMEC";
+        Name = "EMEC";
+        Colour = 0xB0B090_rgb;
         MenuVisible = 1;
         MenuSection = SC_EM;
         Enabled = 1;
@@ -34,7 +44,7 @@ void Element::Element_EMW()
         Weight = 100;
 
         HeatConduct = 251;
-        Description = ByteString("电磁波源,向电磁场辐射正弦波(.tmp覆盖频率1~40,.ctype=1为波包)").FromUtf8();
+        Description = ByteString("良导体,电磁场电导率=0.9,吸收大部分电磁波(EMWave2 良导体)").FromUtf8();
 
         Properties = TYPE_SOLID;
 
@@ -48,13 +58,4 @@ void Element::Element_EMW()
         HighTemperatureTransition = NT;
 
         Create = &create;
-}
-
-static void create(ELEMENT_CREATE_FUNC_ARGS)
-{
-        // default to the global frequency (tmp = 0) unless a specific one is drawn
-        if (v > 0)
-        {
-                sim->parts[i].tmp = (v < 40) ? v : 40;
-        }
 }

@@ -13,7 +13,7 @@ void Element::Element_EMJP()
         Name = "EMJP";
         Colour = 0xFF5050_rgb;
         MenuVisible = 1;
-        MenuSection = SC_ELEC;
+        MenuSection = SC_EM;
         Enabled = 1;
 
         Advection = 0.0f;

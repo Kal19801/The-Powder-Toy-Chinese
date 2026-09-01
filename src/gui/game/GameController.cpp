@@ -4,6 +4,7 @@
 #include "Controller.h"
 #include "Format.h"
 #include "GameModel.h"
+#include "simulation/EMField.h"
 #include "GameModelException.h"
 #include "GameView.h"
 #include "Menu.h"
@@ -785,6 +786,19 @@ void GameController::ResetAir()
                 {
                         sim->parts[i].tmp3 = 0;
                 }
+        }
+}
+
+void GameController::ResetEMField()
+{
+        // reset the EM wave simulation the same way the "=" key resets the
+        // pressure system: drop the wave state (and the currents) but keep the
+        // painted EM materials and the tool overrides, like air->Clear() keeps
+        // the walls
+        auto *sim = gameModel->GetSimulation();
+        if (sim->emfOwner)
+        {
+                sim->emfOwner->Clear();
         }
 }
 

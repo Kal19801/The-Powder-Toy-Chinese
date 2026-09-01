@@ -1,19 +1,25 @@
 #include "simulation/ElementCommon.h"
+#include "simulation/EMField.h"
 
-// EMJN: negative DC current source, port of the MODE_J_NEG paint mode of
-// Paul Falstad's EMWave2 applet (oe.jz = -1). The element injects a steady
-// negative current into the EM field, which creates the magnetic field around
-// the source and radiates waves; conductors near it carry induced currents
-// exactly like current sources do in the applet. The element itself is
-// static; the field does the rest.
-
-void Element::Element_EMJN()
+// Real zone material; participates in the TM-mode EM field simulation through
+// EMField::SyncMaterials(), which maps its particle type and temperature onto
+// the EM cell material every frame.
+static void create(ELEMENT_CREATE_FUNC_ARGS);
+static void create(ELEMENT_CREATE_FUNC_ARGS)
 {
-        Identifier = "DEFAULT_PT_EMJN";
-        Name = "EMJN";
-        Colour = 0x5050FF_rgb;
+        if (sim->emfOwner)
+        {
+                sim->emfOwner->enabled = true;
+        }
+}
+
+void Element::Element_SCND()
+{
+        Identifier = "DEFAULT_PT_SCND";
+        Name = "SCND";
+        Colour = 0xE8F0FF_rgb;
         MenuVisible = 1;
-        MenuSection = SC_EM;
+        MenuSection = SC_REAL;
         Enabled = 1;
 
         Advection = 0.0f;
@@ -29,12 +35,12 @@ void Element::Element_EMJN()
         Flammable = 0;
         Explosive = 0;
         Meltable = 0;
-        Hardness = 1;
+        Hardness = 10;
 
         Weight = 100;
 
         HeatConduct = 251;
-        Description = ByteString("电流源(-),向电磁场持续注入负向电流,产生磁场并辐射电磁波").FromUtf8();
+        Description = ByteString("超导体,低于93K完全导电并排出磁场(迈斯纳效应),超温失超").FromUtf8();
 
         Properties = TYPE_SOLID;
 
@@ -46,4 +52,6 @@ void Element::Element_EMJN()
         LowTemperatureTransition = NT;
         HighTemperature = ITH;
         HighTemperatureTransition = NT;
+
+        Create = &create;
 }

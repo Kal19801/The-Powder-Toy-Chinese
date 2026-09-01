@@ -375,7 +375,7 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
 
         // TM-mode EM field section (EMWave2 port)
         addSeparator();
-        emEnabled = addCheckbox(0, ByteString("电磁场模拟 \bg- TM模电磁波").FromUtf8(), ByteString("\bg 金属反射波, 玻璃折射, 火花与EMW辐射波, 波可加热/感应金属").FromUtf8(), [this] {
+        emEnabled = addCheckbox(0, ByteString("电磁场模拟 \bg- TM模电磁波").FromUtf8(), ByteString("\bg 电磁场/真实区元素参与模拟:导体反射吸收,电介质折射,波可加热真实导体").FromUtf8(), [this] {
                 c->SetEMEnabled(emEnabled->GetChecked());
         });
         emCellSize = addDropDown(ByteString("电磁场网格大小").FromUtf8(), {

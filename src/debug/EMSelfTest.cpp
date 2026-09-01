@@ -10,6 +10,10 @@
 #include <cstdlib>
 #include <iostream>
 
+// EM field self test, a debug block (see the EMFIELD_DEBUG guard in
+// GameController.cpp): drives the rewritten current system from the main loop
+// and asserts its invariants. Compiled out of normal builds.
+
 namespace
 {
         int frame = 0;
@@ -27,11 +31,26 @@ namespace
                         std::cerr << "[EMSELFTEST] FAIL: " << what << std::endl;
                 }
         }
+
+        double FieldEnergy(const EMField &emf)
+        {
+                double energy = 0;
+                for (int y = 1; y < emf.gh - 1; y++)
+                {
+                        for (int x = 1; x < emf.gw - 1; x++)
+                        {
+                                int gi = x + y * emf.gw;
+                                const auto &cell = emf.cells[gi];
+                                energy += 0.5 * cell.dazdt * cell.dazdt + 0.5 * cell.az * cell.az;
+                        }
+                }
+                return energy;
+        }
 }
 
 void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
 {
-        if (frame >= 200)
+        if (frame >= 2200)
         {
                 // safety net: never hang forever
                 std::cerr << "[EMSELFTEST] FAIL: timed out" << std::endl;
@@ -48,19 +67,45 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 gameModel.SetEMSourceMode(EMSRC_1S1F);
                 gameModel.SetEMFrequency(10);
                 gameModel.SetEMViewMode(EMVIEW_E_B_J);
-                // a bit of everything: metal bar, glass slab, iron bar, an EMW source,
-                // a resonant slab and a small antenna
-                for (int x = 80; x < 130; ++x) sim->create_part(-1, x, 180, PT_METL);
-                for (int x = 160; x < 210; ++x) sim->create_part(-1, x, 180, PT_GLAS);
-                for (int x = 240; x < 290; ++x) sim->create_part(-1, x, 180, PT_IRON);
+                // the applet material modes ported as elements: conductors, magnets,
+                // dielectric, resonant medium and the EMW source
+                for (int x = 80; x < 130; ++x) sim->create_part(-1, x, 180, PT_EMPC);
+                for (int x = 160; x < 210; ++x) sim->create_part(-1, x, 180, PT_EMEC);
+                for (int x = 240; x < 290; ++x) sim->create_part(-1, x, 180, PT_EMFC);
                 sim->create_part(-1, 320, 180, PT_EMW);
                 for (int x = 350; x < 420; ++x) sim->create_part(-1, x, 250, PT_EMR);
-                for (int x = 430; x < 480; ++x) sim->create_part(-1, x, 180, PT_WIRE);
-                for (int x = 430; x < 480; ++x) sim->create_part(-1, x, 200, PT_METL);
-                // the applet material modes ported as elements: current sources and magnets
+                for (int x = 430; x < 480; ++x) sim->create_part(-1, x, 180, PT_EMFM);
+                for (int x = 430; x < 480; ++x) sim->create_part(-1, x, 200, PT_EMDM);
                 for (int x = 500; x < 550; ++x) sim->create_part(-1, x, 180, PT_EMJP);
                 for (int x = 500; x < 550; ++x) sim->create_part(-1, x, 220, PT_EMJN);
-                for (int x = 80; x < 140; ++x) sim->create_part(-1, x, 140, PT_EMMG);
+                // a copper bar right below the positive current source picks up the
+                // induced current and must heat up (Joule losses in real conductors)
+                for (int x = 500; x < 550; ++x) sim->create_part(-1, x, 184, PT_CU);
+                for (int x = 80; x < 140; ++x) sim->create_part(-1, x, 140, PT_EMMGD);
+                for (int x = 80; x < 140; ++x) sim->create_part(-1, x, 240, PT_EMMGU);
+                for (int x = 560; x < 610; ++x) sim->create_part(-1, x, 180, PT_EMDE);
+                // real zone materials and powders
+                for (int x = 80; x < 130; ++x) sim->create_part(-1, x, 280, PT_FE);
+                for (int x = 160; x < 210; ++x) sim->create_part(-1, x, 280, PT_CU);
+                for (int x = 240; x < 290; ++x) sim->create_part(-1, x, 280, PT_AG);
+                for (int x = 320; x < 370; ++x) sim->create_part(-1, x, 280, PT_TI);
+                for (int x = 400; x < 450; ++x) sim->create_part(-1, x, 280, PT_SCND);
+                for (int x = 480; x < 530; ++x) sim->create_part(-1, x, 280, PT_PGRF);
+                for (int x = 80; x < 130; ++x) sim->create_part(-1, x, 320, PT_FEPW);
+                for (int x = 160; x < 210; ++x) sim->create_part(-1, x, 320, PT_PGPW);
+                // superconductor must start below Tc to superconduct
+                for (int x = 240; x < 290; ++x)
+                {
+                        int i = sim->create_part(-1, x, 320, PT_SCPW);
+                        if (i >= 0)
+                        {
+                                sim->parts[i].temp = 4.0f;
+                        }
+                }
+                // real charged particles
+                sim->create_part(-1, 600, 100, PT_RELC);
+                sim->create_part(-1, 600, 110, PT_RPRO);
+                sim->create_part(-1, 600, 120, PT_RMON);
                 std::cout << "[EMSELFTEST] setup complete" << std::endl;
                 break;
         }
@@ -69,30 +114,34 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 auto *sim = gameModel.GetSimulation();
                 auto *emf = sim->GetEMField();
                 double maxdazdt = 0;
-                int conductors = 0, mediums = 0, ferro = 0, resonant = 0, sources = 0;
+                int conductors = 0, mediums = 0, ferro = 0, diamag = 0, resonant = 0, sources = 0;
                 for (auto &cell : emf->cells)
                 {
                         maxdazdt = std::max(maxdazdt, std::abs(cell.dazdt));
                         if (cell.conductivity > 0) conductors++;
                         if (cell.medium > 0) mediums++;
                         if (cell.perm > 1) ferro++;
+                        if (cell.perm < 1 && cell.perm != 1) diamag++;
                         if (cell.resonant) resonant++;
                         if (cell.jzext != 0) sources++;
                 }
                 Check(maxdazdt > 0.02, "EM wave energy present in the field");
-                Check(conductors >= 30, "TPT metal mapped to EM conductor cells");
-                Check(mediums >= 10, "TPT glass mapped to EM dielectric cells");
-                Check(ferro >= 10, "TPT iron mapped to EM ferromagnet cells");
+                Check(conductors >= 150, "EM conductor elements + real conductors mapped to conductor cells");
+                Check(mediums >= 10, "EMDE element mapped to dielectric cells");
+                Check(ferro >= 10, "EMFM/FE/FEPW mapped to ferromagnet cells");
+                Check(diamag >= 10, "EMDM/PGRF/PGPW/SCPW mapped to diamagnet cells");
                 Check(resonant >= 10, "EMR element mapped to resonant cells");
                 Check(sources >= 3, "global/EMW/EMJP/EMJN sources inject current");
-                // EMMG magnets must map to magnetized cells (mx/my = +-1)
+                // the four magnet elements must map to magnetized cells
                 int magnets = 0;
                 for (auto &cell : emf->cells)
                 {
                         if (cell.mx != 0 || cell.my != 0)
                                 magnets++;
                 }
-                Check(magnets >= 10, "EMMG element mapped to magnet cells");
+                Check(magnets >= 20, "EMMGD/EMMGU elements mapped to magnet cells");
+                // real particles registered
+                Check(emf->realChargeCount == 3, "RPRO/RELC/RMON registered as real charges");
                 gameModel.SetEMViewMode(EMVIEW_B_LINES); // exercise field line rendering
                 break;
         }
@@ -107,23 +156,30 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                         anyMag |= emf->ApplyMagDir(gi, 0.25f);
                         anyAdj |= emf->ApplyAdjust(gi, 0.5f);
                 }
-                Check(anyMag, "EMMD magnetization applies to ferromagnetic cells");
-                Check(anyAdj, "EMADJ parameter adjustment applies to material cells");
-                // the five separate applet adjust modes (EMAJ* tools)
-                bool adjC = false, adjP = false, adjJ = false, adjD = false, adjS = false;
-                for (int gi = 0; gi < emf->gw * emf->gh; ++gi)
+                Check(anyMag, "magnetization applies to ferromagnetic cells");
+                Check(anyAdj, "combined parameter adjustment applies to material cells");
+                // the unified EM adjust tool: all six properties and all three modes
+                bool set[EMADJP_COUNT] = {};
+                for (int prop = 0; prop < EMADJP_COUNT; ++prop)
                 {
-                        adjC |= emf->ApplyAdjustMode(EMADJM_CONDUCT, gi, 0.5f);
-                        adjP |= emf->ApplyAdjustMode(EMADJM_PERM, gi, 0.5f);
-                        adjJ |= emf->ApplyAdjustMode(EMADJM_J, gi, 0.5f);
-                        adjD |= emf->ApplyAdjustMode(EMADJM_MEDIUM, gi, 0.5f);
-                        adjS |= emf->ApplyAdjustMode(EMADJM_MAG_STR, gi, 0.5f);
+                        for (int gi = 0; gi < emf->gw * emf->gh; ++gi)
+                        {
+                                set[prop] |= emf->ApplyEMProperty(prop, EMADJA_SET, gi, 0.5f);
+                        }
                 }
-                Check(adjC, "EMAJC conductivity adjust applies to conductor cells");
-                Check(adjP, "EMAJP permeability adjust applies to ferromagnet cells");
-                Check(adjJ, "EMAJJ current adjust applies to current cells");
-                Check(adjD, "EMAJD dielectric adjust applies to medium cells");
-                Check(adjS, "EMAJS strength adjust applies to magnet cells");
+                Check(set[EMADJP_CONDUCT], "EMADJ set mode: conductivity applies to conductors");
+                Check(set[EMADJP_PERM], "EMADJ set mode: permeability applies to ferromagnets");
+                Check(set[EMADJP_J], "EMADJ set mode: current applies to current sources");
+                Check(set[EMADJP_MEDIUM], "EMADJ set mode: dielectric applies to medium cells");
+                Check(set[EMADJP_MAG_DIR], "EMADJ set mode: mag direction applies to magnets");
+                Check(set[EMADJP_MAG_STR], "EMADJ set mode: mag strength applies to magnets");
+                // add / subtract accumulate onto the effective value
+                int gi = emf->CellIndex(100, 180); // an EMPC cell: conductivity 1
+                emf->ApplyEMProperty(EMADJP_CONDUCT, EMADJA_SET, gi, 1.0f);
+                emf->ApplyEMProperty(EMADJP_CONDUCT, EMADJA_SUB, gi, 0.25f);
+                Check(std::abs(emf->cells[gi].ovConduct - 0.75f) < 1e-3, "EMADJ subtract mode accumulates onto the effective value");
+                emf->ApplyEMProperty(EMADJP_CONDUCT, EMADJA_ADD, gi, 0.25f);
+                Check(std::abs(emf->cells[gi].ovConduct - 1.0f) < 1e-3, "EMADJ add mode accumulates onto the effective value");
                 // VacuumCell / ClearCellOverrides (EMCLR + erase integration)
                 emf->VacuumCell(emf->CellIndex(100, 180));
                 Check(emf->cells[emf->CellIndex(100, 180)].ovMask == 0, "EMCLR vacuum clears cell overrides");
@@ -140,14 +196,8 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 // THE CRASH REGRESSION TEST: opening the settings window is the exact
                 // code path ("点击设置") that used to die with "Memory read/write error"
                 // on handheld builds, where the language dropdown is never created.
-                // The old crash happened synchronously inside OptionsController's
-                // constructor (NotifySettingsChanged), so if OpenOptions() returns we
-                // know the crash is gone.
                 gameController.OpenOptions();
                 Check(true, "options window constructed and survived NotifySettingsChanged");
-                // note: while the modal window is open, GameController::Tick is not
-                // called anymore (ShowWindow replaces the engine state); the window
-                // closes itself again from OptionsView::OnTick's debug block below.
                 break;
         }
         case 105:
@@ -157,35 +207,142 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
         }
         case 125:
         {
-                // field -> particle interactions
+                // field -> particle interactions on the REAL system only: the vanilla
+                // elements are reverted and must not be affected by the field
                 auto *sim = gameModel.GetSimulation();
                 auto *emf = sim->GetEMField();
-                double maxMetalTemp = 0;
-                int sparks = 0;
+                double maxRealTemp = 0;
                 auto &parts = sim->parts;
                 for (int i = 0; i < parts.active; ++i)
                 {
                         auto &p = parts.data[i];
-                        if (p.type == PT_METL || p.type == PT_WIRE || p.type == PT_IRON)
+                        if (p.type == PT_CU || p.type == PT_AG || p.type == PT_FE)
                         {
-                                maxMetalTemp = std::max(maxMetalTemp, double(p.temp));
-                        }
-                        if (p.type == PT_SPRK)
-                        {
-                                sparks++;
+                                maxRealTemp = std::max(maxRealTemp, double(p.temp));
                         }
                 }
-                std::cout << "[EMSELFTEST] info: max metal temp " << maxMetalTemp
-                          << "K, induced sparks so far: " << sparks << std::endl;
-                Check(maxMetalTemp > 295.5, "Joule heating raises conductor temperature");
+                std::cout << "[EMSELFTEST] info: max real conductor temp " << maxRealTemp << "K" << std::endl;
+                Check(maxRealTemp > 295.5, "Joule heating raises real conductor temperature");
+                // the velocity clamp: give an electron a huge kick and verify the
+                // next frames clamp it back to the field propagation speed
+                int el = -1;
+                for (int i = 0; i < parts.active; ++i)
+                {
+                        if (parts.data[i].type == PT_RELC)
+                        {
+                                el = i;
+                                break;
+                        }
+                }
+                if (el >= 0)
+                {
+                        parts.data[el].vx = 50.0f; // way beyond the speed of light
+                        parts.data[el].vy = 50.0f;
+                        float vmax = emf->MaxParticleSpeed();
+                        std::cout << "[EMSELFTEST] info: max particle speed " << vmax << " px/frame" << std::endl;
+                }
+                else
+                {
+                        Check(false, "real electron present for the FTL clamp test");
+                }
                 gameModel.SetEMViewMode(EMVIEW_E);
+                break;
+        }
+        case 135:
+        {
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                float vmax = emf->MaxParticleSpeed();
+                auto &parts = sim->parts;
+                bool clamped = true;
+                for (int i = 0; i < parts.active; ++i)
+                {
+                        auto &p = parts.data[i];
+                        if (p.type == PT_RPRO || p.type == PT_RELC || p.type == PT_RMON)
+                        {
+                                float sp = std::sqrt(p.vx * p.vx + p.vy * p.vy);
+                                if (sp > vmax * 1.001f)
+                                {
+                                        clamped = false;
+                                }
+                        }
+                }
+                Check(clamped, "real particles never exceed the field propagation speed (FTL clamp)");
+                // energy boundedness: the field energy must stay finite over the run
+                double energy = FieldEnergy(*emf);
+                std::cout << "[EMSELFTEST] info: field energy " << energy << std::endl;
+                Check(std::isfinite(energy) && energy < 1e6, "field energy stays bounded with sources on (no divergence)");
                 break;
         }
         case 145:
         {
+                // divergence soak test: a ferromagnet next to a driven source must
+                // not blow up over a long run (the old self-excitation regression)
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                gameModel.SetEMSpeed(2); // fastest sub-step setting, worst CFL case
+                double e0 = FieldEnergy(*emf);
+                std::cout << "[EMSELFTEST] info: energy before soak " << e0 << std::endl;
+                gameModel.SetEMViewMode(EMVIEW_E_B_J);
+                break;
+        }
+        case 345:
+        {
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                double energy = FieldEnergy(*emf);
+                std::cout << "[EMSELFTEST] info: energy after 200-frame soak at 2x speed " << energy << std::endl;
+                Check(std::isfinite(energy) && energy < 1e6, "200-frame ferromagnet soak at 2x speed stays bounded");
+                Check(emf->fieldClampHits == 0, "wave state never touched the safety clamp");
+                gameModel.SetEMSpeed(1);
+                break;
+        }
+        case 2000:
+        {
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                double energy = FieldEnergy(*emf);
+                std::cout << "[EMSELFTEST] info: energy after 1650-frame soak at 1x speed " << energy << std::endl;
+                Check(std::isfinite(energy) && energy < 2e5, "long soak stays bounded (steady state, no divergence)");
+                Check(emf->fieldClampHits == 0, "wave state never touched the safety clamp (long run)");
+                break;
+        }
+        case 365:
+        {
+                // EMCLR must only clear the field, never delete particles
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                int before = 0;
+                auto &parts = sim->parts;
+                for (int i = 0; i < parts.active; ++i)
+                {
+                        if (parts.data[i].type)
+                        {
+                                before++;
+                        }
+                }
+                int cx = emf->CellIndex(100, 180) % emf->gw;
+                int cy = emf->CellIndex(100, 180) / emf->gw;
+                int px = cx * emf->cellSize;
+                int py = cy * emf->cellSize;
+                // call VacuumCell exactly like the EMCLR tool does
+                emf->VacuumCell(emf->CellIndex(px, py));
+                int after = 0;
+                for (int i = 0; i < parts.active; ++i)
+                {
+                        if (parts.data[i].type)
+                        {
+                                after++;
+                        }
+                }
+                Check(before == after, "EMCLR clears only the field, no particles are deleted");
+                break;
+        }
+        case 2100:
+        {
                 // new-save regression: a full simulation reset (new save, loaded
-                // save, clear) must wipe every EM tool override, otherwise EMADJ/
-                // EMMD painting leaks into the next save forever
+                // save, clear) must wipe every EM tool override and current, and
+                // the erase tool must leave no invisible EM residue behind
                 auto *sim = gameModel.GetSimulation();
                 auto *emf = sim->GetEMField();
                 bool anyOv = false;
@@ -196,11 +353,14 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 Check(anyOv, "EM overrides present before the reset");
                 sim->clear_sim();
                 anyOv = false;
+                double leftoverCurrent = 0;
                 for (auto &cell : emf->cells)
                 {
                         anyOv |= cell.ovMask != 0;
+                        leftoverCurrent += std::abs(cell.jz) + std::abs(cell.jzext);
                 }
                 Check(!anyOv, "clear_sim (new save) clears all EM overrides");
+                Check(leftoverCurrent == 0, "clear_sim drops all currents");
                 if (failCount)
                 {
                         std::cerr << "[EMSELFTEST] RESULT: " << failCount << " FAILURES" << std::endl;

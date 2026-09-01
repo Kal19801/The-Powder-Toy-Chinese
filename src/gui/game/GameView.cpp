@@ -1548,7 +1548,10 @@ void GameView::OnKeyPress(int key, int scan, bool repeat, bool shift, bool ctrl,
 		if(ctrl)
 			c->ResetSpark();
 		else
+		{
 			c->ResetAir();
+			c->ResetEMField();
+		}
 		break;
 	case SDL_SCANCODE_C:
 		if(ctrl)
