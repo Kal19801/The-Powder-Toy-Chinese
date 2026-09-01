@@ -9,36 +9,37 @@
 
 struct HdispLimitExplicit
 {
-	float value;
+        float value;
 };
 struct HdispLimitAuto
 {
 };
 using HdispLimit = std::variant<
-	HdispLimitExplicit,
-	HdispLimitAuto
+        HdispLimitExplicit,
+        HdispLimitAuto
 >;
 
 struct RendererSettings
 {
-	uint32_t renderMode = RENDER_BASC | RENDER_FIRE | RENDER_SPRK | RENDER_EFFE;
-	uint32_t displayMode = 0;
-	uint32_t colorMode = COLOUR_DEFAULT;
-	std::optional<FindingElement> findingElement;
-	bool gravityZonesEnabled = false;
-	bool gravityFieldEnabled = false;
-	enum DecorationLevel
-	{
-		decorationDisabled,
-		decorationEnabled,
-		decorationAntiClickbait,
-	};
-	DecorationLevel decorationLevel = decorationEnabled;
-	bool debugLines = false;
-	ui::Point mousePos = { 0, 0 };
-	int gridSize = 0;
-	float fireIntensity = 1;
-	HdispLimit wantHdispLimitMin = HdispLimitExplicit{ MIN_TEMP };
-	HdispLimit wantHdispLimitMax = HdispLimitExplicit{ MAX_TEMP };
-	Rect<int> autoHdispLimitArea = RES.OriginRect();
+        uint32_t renderMode = RENDER_BASC | RENDER_FIRE | RENDER_SPRK | RENDER_EFFE;
+        uint32_t displayMode = 0;
+        uint32_t colorMode = COLOUR_DEFAULT;
+        int emViewMode = EMVIEW_DEFAULT; // TM-mode EM field display (EMWave2 port)
+        std::optional<FindingElement> findingElement;
+        bool gravityZonesEnabled = false;
+        bool gravityFieldEnabled = false;
+        enum DecorationLevel
+        {
+                decorationDisabled,
+                decorationEnabled,
+                decorationAntiClickbait,
+        };
+        DecorationLevel decorationLevel = decorationEnabled;
+        bool debugLines = false;
+        ui::Point mousePos = { 0, 0 };
+        int gridSize = 0;
+        float fireIntensity = 1;
+        HdispLimit wantHdispLimitMin = HdispLimitExplicit{ MIN_TEMP };
+        HdispLimit wantHdispLimitMax = HdispLimitExplicit{ MAX_TEMP };
+        Rect<int> autoHdispLimitArea = RES.OriginRect();
 };

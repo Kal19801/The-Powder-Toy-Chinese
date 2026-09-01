@@ -82,7 +82,7 @@ endif
 default_touch_ui = false
 if host_platform == 'android'
 	default_touch_ui = true # TODO: some more sophisticated heuristic at runtime instead
-	force_window_frame_ops = 'forceWindowFrameOpsHandheld'
+	force_window_frame_ops = 'forceWindowFrameOpsNone'
 endif
 secure_ciphers_only = get_option('secure_ciphers_only')
 if not is_debug and not enforce_https

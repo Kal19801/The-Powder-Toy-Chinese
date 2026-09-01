@@ -6,95 +6,95 @@
 #include "Controller.h"
 
 OptionsController::OptionsController(GameModel * gModel_, std::function<void ()> onDone_):
-	gModel(gModel_),
-	onDone(onDone_),
-	HasExited(false)
+        gModel(gModel_),
+        onDone(onDone_),
+        HasExited(false)
 {
-	view = new OptionsView();
-	model = new OptionsModel(gModel);
-	model->AddObserver(view);
+        view = new OptionsView();
+        model = new OptionsModel(gModel);
+        model->AddObserver(view);
 
-	view->AttachController(this);
+        view->AttachController(this);
 }
 
 void OptionsController::SetHeatSimulation(bool state)
 {
-	model->SetHeatSimulation(state);
+        model->SetHeatSimulation(state);
 }
 
 void OptionsController::SetAmbientHeatSimulation(bool state)
 {
-	model->SetAmbientHeatSimulation(state);
+        model->SetAmbientHeatSimulation(state);
 }
 
 void OptionsController::SetNewtonianGravity(bool state)
 {
-	model->SetNewtonianGravity(state);
+        model->SetNewtonianGravity(state);
 }
 
 void OptionsController::SetWaterEqualisation(bool state)
 {
-	model->SetWaterEqualisation(state);
+        model->SetWaterEqualisation(state);
 }
 
 void OptionsController::SetGravityMode(int gravityMode)
 {
-	model->SetGravityMode(gravityMode);
+        model->SetGravityMode(gravityMode);
 }
 
 void OptionsController::SetCustomGravityX(float x)
 {
-	model->SetCustomGravityX(x);
+        model->SetCustomGravityX(x);
 }
 
 void OptionsController::SetCustomGravityY(float y)
 {
-	model->SetCustomGravityY(y);
+        model->SetCustomGravityY(y);
 }
 
 void OptionsController::SetAirMode(int airMode)
 {
-	model->SetAirMode(airMode);
+        model->SetAirMode(airMode);
 }
 
 void OptionsController::SetAmbientAirTemperature(float ambientAirTemp)
 {
-	model->SetAmbientAirTemperature(ambientAirTemp);
+        model->SetAmbientAirTemperature(ambientAirTemp);
 }
 
 void OptionsController::SetEdgePressure(float edgePressure)
 {
-	model->SetEdgePressure(edgePressure);
+        model->SetEdgePressure(edgePressure);
 }
 
 void OptionsController::SetEdgeVelocityX(float edgeVelocityX)
 {
-	model->SetEdgeVelocityX(edgeVelocityX);
+        model->SetEdgeVelocityX(edgeVelocityX);
 }
 
 void OptionsController::SetEdgeVelocityY(float edgeVelocityY)
 {
-	model->SetEdgeVelocityY(edgeVelocityY);
+        model->SetEdgeVelocityY(edgeVelocityY);
 }
 
 void OptionsController::SetVorticityCoeff(float vorticityCoeff)
 {
-	model->SetVorticityCoeff(vorticityCoeff);
+        model->SetVorticityCoeff(vorticityCoeff);
 }
 
 void OptionsController::SetConvectionMode(int convMode)
 {
-	model->SetConvectionMode(convMode);
+        model->SetConvectionMode(convMode);
 }
 
 void OptionsController::SetEdgeMode(int edgeMode)
 {
-	model->SetEdgeMode(edgeMode);
+        model->SetEdgeMode(edgeMode);
 }
 
 void OptionsController::SetTemperatureScale(TempScale temperatureScale)
 {
-	model->SetTemperatureScale(temperatureScale);
+        model->SetTemperatureScale(temperatureScale);
 }
 
 void OptionsController::SetLanguage(int language)  
@@ -104,118 +104,175 @@ void OptionsController::SetLanguage(int language)
 
 void OptionsController::SetThreadedRendering(bool newThreadedRendering)
 {
-	model->SetThreadedRendering(newThreadedRendering);
+        model->SetThreadedRendering(newThreadedRendering);
 }
 
 void OptionsController::SetFullscreen(bool fullscreen)
 {
-	model->SetFullscreen(fullscreen);
+        model->SetFullscreen(fullscreen);
 }
 
 void OptionsController::SetChangeResolution(bool newChangeResolution)
 {
-	model->SetChangeResolution(newChangeResolution);
+        model->SetChangeResolution(newChangeResolution);
 }
 
 void OptionsController::SetForceIntegerScaling(bool forceIntegerScaling)
 {
-	model->SetForceIntegerScaling(forceIntegerScaling);
+        model->SetForceIntegerScaling(forceIntegerScaling);
 }
 
 void OptionsController::SetBlurryScaling(bool newBlurryScaling)
 {
-	model->SetBlurryScaling(newBlurryScaling);
+        model->SetBlurryScaling(newBlurryScaling);
 }
 
 void OptionsController::SetShowAvatars(bool showAvatars)
 {
-	model->SetShowAvatars(showAvatars);
+        model->SetShowAvatars(showAvatars);
 }
 
 void OptionsController::SetScale(int scale)
 {
-	model->SetScale(scale);
+        model->SetScale(scale);
 }
 
 void OptionsController::SetGraveExitsConsole(bool graveExitsConsole)
 {
-	model->SetGraveExitsConsole(graveExitsConsole);
+        model->SetGraveExitsConsole(graveExitsConsole);
 }
 
 void OptionsController::SetNativeClipoard(bool nativeClipoard)
 {
-	model->SetNativeClipoard(nativeClipoard);
+        model->SetNativeClipoard(nativeClipoard);
 }
 
 void OptionsController::SetResizable(bool resizable)
 {
-	model->SetResizable(resizable);
+        model->SetResizable(resizable);
 }
 
 void OptionsController::SetFastQuit(bool fastquit)
 {
-	model->SetFastQuit(fastquit);
+        model->SetFastQuit(fastquit);
 }
 
 void OptionsController::SetGlobalQuit(bool newGlobalQuit)
 {
-	model->SetGlobalQuit(newGlobalQuit);
+        model->SetGlobalQuit(newGlobalQuit);
 }
 
 void OptionsController::SetDecoSpace(int decoSpace)
 {
-	model->SetDecoSpace(decoSpace);
+        model->SetDecoSpace(decoSpace);
 }
 
 OptionsView * OptionsController::GetView()
 {
-	return view;
+        return view;
 }
 
 void OptionsController::SetMouseClickrequired(bool mouseClickRequired)
 {
-	model->SetMouseClickRequired(mouseClickRequired);
+        model->SetMouseClickRequired(mouseClickRequired);
 }
 
 void OptionsController::SetIncludePressure(bool includePressure)
 {
-	model->SetIncludePressure(includePressure);
+        model->SetIncludePressure(includePressure);
 }
 
 void OptionsController::SetPerfectCircle(bool perfectCircle)
 {
-	model->SetPerfectCircle(perfectCircle);
+        model->SetPerfectCircle(perfectCircle);
 }
 
 void OptionsController::SetMomentumScroll(bool momentumScroll)
 {
-	model->SetMomentumScroll(momentumScroll);
+        model->SetMomentumScroll(momentumScroll);
 }
 
 void OptionsController::SetRedirectStd(bool newRedirectStd)
 {
-	model->SetRedirectStd(newRedirectStd);
+        model->SetRedirectStd(newRedirectStd);
 }
 
 void OptionsController::SetAutoStartupRequest(bool newAutoStartupRequest)
 {
-	model->SetAutoStartupRequest(newAutoStartupRequest);
+        model->SetAutoStartupRequest(newAutoStartupRequest);
+}
+
+// TM-mode EM field settings (EMWave2 port)
+
+void OptionsController::SetEMEnabled(bool state)
+{
+        model->SetEMEnabled(state);
+}
+
+void OptionsController::SetEMCellSize(int cellSize)
+{
+        model->SetEMCellSize(cellSize);
+}
+
+void OptionsController::SetEMSourceMode(int sourceMode)
+{
+        model->SetEMSourceMode(sourceMode);
+}
+
+void OptionsController::SetEMFrequency(float frequency)
+{
+        model->SetEMFrequency(frequency);
+}
+
+void OptionsController::SetEMAux(float aux)
+{
+        model->SetEMAux(aux);
+}
+
+void OptionsController::SetEMBrightness(int brightness)
+{
+        model->SetEMBrightness(brightness);
+}
+
+void OptionsController::SetEMLineDensity(int lineDensity)
+{
+        model->SetEMLineDensity(lineDensity);
+}
+
+void OptionsController::SetEMSpeed(int speed)
+{
+        model->SetEMSpeed(speed);
+}
+
+void OptionsController::SetEMViewMode(int viewMode)
+{
+        model->SetEMViewMode(viewMode);
+}
+
+void OptionsController::ClearEMField()
+{
+        model->ClearEMField();
+}
+
+void OptionsController::ClearEMOverrides()
+{
+        model->ClearEMOverrides();
 }
 
 void OptionsController::Exit()
 {
-	view->CloseActiveWindow();
+        view->CloseActiveWindow();
 
-	if (onDone)
-		onDone();
-	HasExited = true;
+        if (onDone)
+                onDone();
+        HasExited = true;
 }
 
 
 OptionsController::~OptionsController()
 {
-	delete model;
-	view->CloseActiveWindow();
-	delete view;
+        delete model;
+        view->CloseActiveWindow();
+        delete view;
 }
 

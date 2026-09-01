@@ -10,90 +10,90 @@
 #include "client/Client.h"
 
 OptionsModel::OptionsModel(GameModel * gModel_) {
-	gModel = gModel_;
-	sim = gModel->GetSimulation();
+        gModel = gModel_;
+        sim = gModel->GetSimulation();
 }
 
 void OptionsModel::AddObserver(OptionsView* view)
 {
-	observers.push_back(view);
-	view->NotifySettingsChanged(this);
+        observers.push_back(view);
+        view->NotifySettingsChanged(this);
 }
 
 bool OptionsModel::GetHeatSimulation()
 {
-	return sim->legacy_enable?false:true;
+        return sim->legacy_enable?false:true;
 }
 
 void OptionsModel::SetHeatSimulation(bool state)
 {
-	sim->legacy_enable = state?0:1;
-	notifySettingsChanged();
+        sim->legacy_enable = state?0:1;
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetAmbientHeatSimulation()
 {
-	return sim->aheat_enable?true:false;
+        return sim->aheat_enable?true:false;
 }
 
 void OptionsModel::SetAmbientHeatSimulation(bool state)
 {
-	sim->aheat_enable = state?1:0;
-	notifySettingsChanged();
+        sim->aheat_enable = state?1:0;
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetNewtonianGravity()
 {
-	return bool(sim->grav);
+        return bool(sim->grav);
 }
 
 void OptionsModel::SetNewtonianGravity(bool state)
 {
-	sim->EnableNewtonianGravity(state);
-	notifySettingsChanged();
+        sim->EnableNewtonianGravity(state);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetWaterEqualisation()
 {
-	return sim->water_equal_test?true:false;
+        return sim->water_equal_test?true:false;
 }
 
 void OptionsModel::SetWaterEqualisation(bool state)
 {
-	sim->water_equal_test = state?1:0;
-	notifySettingsChanged();
+        sim->water_equal_test = state?1:0;
+        notifySettingsChanged();
 }
 
 int OptionsModel::GetAirMode()
 {
-	return sim->air->airMode;
+        return sim->air->airMode;
 }
 void OptionsModel::SetAirMode(int airMode)
 {
-	sim->air->airMode = airMode;
-	notifySettingsChanged();
+        sim->air->airMode = airMode;
+        notifySettingsChanged();
 }
 
 int OptionsModel::GetEdgeMode()
 {
-	return gModel->GetSimulation()->edgeMode;
+        return gModel->GetSimulation()->edgeMode;
 }
 void OptionsModel::SetEdgeMode(int edgeMode)
 {
-	GlobalPrefs::Ref().Set("Simulation.EdgeMode", edgeMode);
-	gModel->SetEdgeMode(edgeMode);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.EdgeMode", edgeMode);
+        gModel->SetEdgeMode(edgeMode);
+        notifySettingsChanged();
 }
 
 TempScale OptionsModel::GetTemperatureScale()
 {
-	return gModel->GetTemperatureScale();
+        return gModel->GetTemperatureScale();
 }
 void OptionsModel::SetTemperatureScale(TempScale temperatureScale)
 {
-	GlobalPrefs::Ref().Set("Renderer.TemperatureScale", int(temperatureScale));
-	gModel->SetTemperatureScale(temperatureScale);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Renderer.TemperatureScale", int(temperatureScale));
+        gModel->SetTemperatureScale(temperatureScale);
+        notifySettingsChanged();
 }
 
 int OptionsModel::GetLanguage()  
@@ -110,331 +110,442 @@ void OptionsModel::SetLanguage(int language)
 
 int OptionsModel::GetThreadedRendering()
 {
-	return gModel->GetThreadedRendering();
+        return gModel->GetThreadedRendering();
 }
 
 void OptionsModel::SetThreadedRendering(bool newThreadedRendering)
 {
-	GlobalPrefs::Ref().Set("Renderer.SeparateThread", newThreadedRendering);
-	gModel->SetThreadedRendering(newThreadedRendering);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Renderer.SeparateThread", newThreadedRendering);
+        gModel->SetThreadedRendering(newThreadedRendering);
+        notifySettingsChanged();
 }
 
 float OptionsModel::GetAmbientAirTemperature()
 {
-	return gModel->GetSimulation()->air->ambientAirTemp;
+        return gModel->GetSimulation()->air->ambientAirTemp;
 }
 void OptionsModel::SetAmbientAirTemperature(float ambientAirTemp)
 {
-	GlobalPrefs::Ref().Set("Simulation.AmbientAirTemp", ambientAirTemp);
-	gModel->SetAmbientAirTemperature(ambientAirTemp);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.AmbientAirTemp", ambientAirTemp);
+        gModel->SetAmbientAirTemperature(ambientAirTemp);
+        notifySettingsChanged();
 }
 
 float OptionsModel::GetEdgePressure()
 {
-	return gModel->GetSimulation()->air->edgePressure;
+        return gModel->GetSimulation()->air->edgePressure;
 }
 void OptionsModel::SetEdgePressure(float edgePressure)
 {
-	GlobalPrefs::Ref().Set("Simulation.EdgePressure", edgePressure);
-	gModel->SetEdgePressure(edgePressure);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.EdgePressure", edgePressure);
+        gModel->SetEdgePressure(edgePressure);
+        notifySettingsChanged();
 }
 
 float OptionsModel::GetEdgeVelocityX()
 {
-	return gModel->GetSimulation()->air->edgeVelocityX;
+        return gModel->GetSimulation()->air->edgeVelocityX;
 }
 void OptionsModel::SetEdgeVelocityX(float edgeVelocityX)
 {
-	GlobalPrefs::Ref().Set("Simulation.EdgeVelocityX", edgeVelocityX);
-	gModel->SetEdgeVelocityX(edgeVelocityX);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.EdgeVelocityX", edgeVelocityX);
+        gModel->SetEdgeVelocityX(edgeVelocityX);
+        notifySettingsChanged();
 }
 
 float OptionsModel::GetEdgeVelocityY()
 {
-	return gModel->GetSimulation()->air->edgeVelocityY;
+        return gModel->GetSimulation()->air->edgeVelocityY;
 }
 void OptionsModel::SetEdgeVelocityY(float edgeVelocityY)
 {
-	GlobalPrefs::Ref().Set("Simulation.EdgeVelocityY", edgeVelocityY);
-	gModel->SetEdgeVelocityY(edgeVelocityY);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.EdgeVelocityY", edgeVelocityY);
+        gModel->SetEdgeVelocityY(edgeVelocityY);
+        notifySettingsChanged();
 }
 
 float OptionsModel::GetVorticityCoeff()
 {
-	return gModel->GetSimulation()->air->vorticityCoeff;
+        return gModel->GetSimulation()->air->vorticityCoeff;
 }
 void OptionsModel::SetVorticityCoeff(float vorticityCoeff)
 {
-	GlobalPrefs::Ref().Set("Simulation.VorticityCoeff", vorticityCoeff);
-	gModel->SetVorticityCoeff(vorticityCoeff);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.VorticityCoeff", vorticityCoeff);
+        gModel->SetVorticityCoeff(vorticityCoeff);
+        notifySettingsChanged();
 }
 
 int OptionsModel::GetConvectionMode()
 {
-	return gModel->GetSimulation()->air->convectionMode;
+        return gModel->GetSimulation()->air->convectionMode;
 }
 void OptionsModel::SetConvectionMode(int convMode)
 {
-	GlobalPrefs::Ref().Set("Simulation.ConvectionMode", convMode);
-	gModel->SetConvectionMode(convMode);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.ConvectionMode", convMode);
+        gModel->SetConvectionMode(convMode);
+        notifySettingsChanged();
 }
 
 int OptionsModel::GetGravityMode()
 {
-	return sim->gravityMode;
+        return sim->gravityMode;
 }
 void OptionsModel::SetGravityMode(int gravityMode)
 {
-	sim->gravityMode = gravityMode;
-	notifySettingsChanged();
+        sim->gravityMode = gravityMode;
+        notifySettingsChanged();
 }
 
 float OptionsModel::GetCustomGravityX()
 {
-	return sim->customGravityX;
+        return sim->customGravityX;
 }
 
 void OptionsModel::SetCustomGravityX(float x)
 {
-	sim->customGravityX = x;
-	notifySettingsChanged();
+        sim->customGravityX = x;
+        notifySettingsChanged();
 }
 
 float OptionsModel::GetCustomGravityY()
 {
-	return sim->customGravityY;
+        return sim->customGravityY;
 }
 
 void OptionsModel::SetCustomGravityY(float y)
 {
-	sim->customGravityY = y;
-	notifySettingsChanged();
+        sim->customGravityY = y;
+        notifySettingsChanged();
 }
 
 int OptionsModel::GetScale()
 {
-	return ui::Engine::Ref().GetScale();
+        return ui::Engine::Ref().GetScale();
 }
 
 void OptionsModel::SetScale(int scale)
 {
-	ui::Engine::Ref().SetScale(scale);
-	GlobalPrefs::Ref().Set("Scale", int(scale));
-	notifySettingsChanged();
+        ui::Engine::Ref().SetScale(scale);
+        GlobalPrefs::Ref().Set("Scale", int(scale));
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetGraveExitsConsole()
 {
-	return ui::Engine::Ref().GraveExitsConsole;
+        return ui::Engine::Ref().GraveExitsConsole;
 }
 
 void OptionsModel::SetGraveExitsConsole(bool graveExitsConsole)
 {
-	ui::Engine::Ref().GraveExitsConsole = graveExitsConsole;
-	GlobalPrefs::Ref().Set("GraveExitsConsole", graveExitsConsole);
-	notifySettingsChanged();
+        ui::Engine::Ref().GraveExitsConsole = graveExitsConsole;
+        GlobalPrefs::Ref().Set("GraveExitsConsole", graveExitsConsole);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetNativeClipoard()
 {
-	return Clipboard::GetEnabled();
+        return Clipboard::GetEnabled();
 }
 
 void OptionsModel::SetNativeClipoard(bool nativeClipoard)
 {
-	Clipboard::SetEnabled(nativeClipoard);
-	GlobalPrefs::Ref().Set("NativeClipboard.Enabled", nativeClipoard);
-	notifySettingsChanged();
+        Clipboard::SetEnabled(nativeClipoard);
+        GlobalPrefs::Ref().Set("NativeClipboard.Enabled", nativeClipoard);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetResizable()
 {
-	return ui::Engine::Ref().GetResizable();
+        return ui::Engine::Ref().GetResizable();
 }
 
 void OptionsModel::SetResizable(bool resizable)
 {
-	ui::Engine::Ref().SetResizable(resizable);
-	GlobalPrefs::Ref().Set("Resizable", resizable);
-	notifySettingsChanged();
+        ui::Engine::Ref().SetResizable(resizable);
+        GlobalPrefs::Ref().Set("Resizable", resizable);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetFullscreen()
 {
-	return ui::Engine::Ref().GetFullscreen();
+        return ui::Engine::Ref().GetFullscreen();
 }
 void OptionsModel::SetFullscreen(bool fullscreen)
 {
-	ui::Engine::Ref().SetFullscreen(fullscreen);
-	GlobalPrefs::Ref().Set("Fullscreen", fullscreen);
-	notifySettingsChanged();
+        ui::Engine::Ref().SetFullscreen(fullscreen);
+        GlobalPrefs::Ref().Set("Fullscreen", fullscreen);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetChangeResolution()
 {
-	return ui::Engine::Ref().GetChangeResolution();
+        return ui::Engine::Ref().GetChangeResolution();
 }
 
 void OptionsModel::SetChangeResolution(bool newChangeResolution)
 {
-	ui::Engine::Ref().SetChangeResolution(newChangeResolution);
-	GlobalPrefs::Ref().Set("AltFullscreen", newChangeResolution);
-	notifySettingsChanged();
+        ui::Engine::Ref().SetChangeResolution(newChangeResolution);
+        GlobalPrefs::Ref().Set("AltFullscreen", newChangeResolution);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetForceIntegerScaling()
 {
-	return ui::Engine::Ref().GetForceIntegerScaling();
+        return ui::Engine::Ref().GetForceIntegerScaling();
 }
 
 void OptionsModel::SetForceIntegerScaling(bool forceIntegerScaling)
 {
-	ui::Engine::Ref().SetForceIntegerScaling(forceIntegerScaling);
-	GlobalPrefs::Ref().Set("ForceIntegerScaling", forceIntegerScaling);
-	notifySettingsChanged();
+        ui::Engine::Ref().SetForceIntegerScaling(forceIntegerScaling);
+        GlobalPrefs::Ref().Set("ForceIntegerScaling", forceIntegerScaling);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetBlurryScaling()
 {
-	return ui::Engine::Ref().GetBlurryScaling();
+        return ui::Engine::Ref().GetBlurryScaling();
 }
 
 void OptionsModel::SetBlurryScaling(bool newBlurryScaling)
 {
-	ui::Engine::Ref().SetBlurryScaling(newBlurryScaling);
-	GlobalPrefs::Ref().Set("BlurryScaling", newBlurryScaling);
-	notifySettingsChanged();
+        ui::Engine::Ref().SetBlurryScaling(newBlurryScaling);
+        GlobalPrefs::Ref().Set("BlurryScaling", newBlurryScaling);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetFastQuit()
 {
-	return ui::Engine::Ref().GetFastQuit();
+        return ui::Engine::Ref().GetFastQuit();
 }
 void OptionsModel::SetFastQuit(bool fastquit)
 {
-	ui::Engine::Ref().SetFastQuit(fastquit);
-	GlobalPrefs::Ref().Set("FastQuit", bool(fastquit));
-	notifySettingsChanged();
+        ui::Engine::Ref().SetFastQuit(fastquit);
+        GlobalPrefs::Ref().Set("FastQuit", bool(fastquit));
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetGlobalQuit()
 {
-	return ui::Engine::Ref().GetGlobalQuit();
+        return ui::Engine::Ref().GetGlobalQuit();
 }
 void OptionsModel::SetGlobalQuit(bool newGlobalQuit)
 {
-	ui::Engine::Ref().SetGlobalQuit(newGlobalQuit);
-	GlobalPrefs::Ref().Set("GlobalQuit", newGlobalQuit);
-	notifySettingsChanged();
+        ui::Engine::Ref().SetGlobalQuit(newGlobalQuit);
+        GlobalPrefs::Ref().Set("GlobalQuit", newGlobalQuit);
+        notifySettingsChanged();
 }
 
 int OptionsModel::GetDecoSpace()
 {
-	return gModel->GetDecoSpace();
+        return gModel->GetDecoSpace();
 }
 void OptionsModel::SetDecoSpace(int decoSpace)
 {
-	GlobalPrefs::Ref().Set("Simulation.DecoSpace", decoSpace);
-	gModel->SetDecoSpace(decoSpace);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.DecoSpace", decoSpace);
+        gModel->SetDecoSpace(decoSpace);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetShowAvatars()
 {
-	return ui::Engine::Ref().ShowAvatars;
+        return ui::Engine::Ref().ShowAvatars;
 }
 
 void OptionsModel::SetShowAvatars(bool state)
 {
-	ui::Engine::Ref().ShowAvatars = state;
-	GlobalPrefs::Ref().Set("ShowAvatars", state);
-	notifySettingsChanged();
+        ui::Engine::Ref().ShowAvatars = state;
+        GlobalPrefs::Ref().Set("ShowAvatars", state);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetMouseClickRequired()
 {
-	return gModel->GetMouseClickRequired();
+        return gModel->GetMouseClickRequired();
 }
 
 void OptionsModel::SetMouseClickRequired(bool mouseClickRequired)
 {
-	GlobalPrefs::Ref().Set("MouseClickRequired", mouseClickRequired);
-	gModel->SetMouseClickRequired(mouseClickRequired);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("MouseClickRequired", mouseClickRequired);
+        gModel->SetMouseClickRequired(mouseClickRequired);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetIncludePressure()
 {
-	return gModel->GetIncludePressure();
+        return gModel->GetIncludePressure();
 }
 
 void OptionsModel::SetIncludePressure(bool includePressure)
 {
-	GlobalPrefs::Ref().Set("Simulation.IncludePressure", includePressure);
-	gModel->SetIncludePressure(includePressure);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("Simulation.IncludePressure", includePressure);
+        gModel->SetIncludePressure(includePressure);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetPerfectCircle()
 {
-	return gModel->GetPerfectCircle();
+        return gModel->GetPerfectCircle();
 }
 
 void OptionsModel::SetPerfectCircle(bool perfectCircle)
 {
-	GlobalPrefs::Ref().Set("PerfectCircleBrush", perfectCircle);
-	gModel->SetPerfectCircle(perfectCircle);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("PerfectCircleBrush", perfectCircle);
+        gModel->SetPerfectCircle(perfectCircle);
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetMomentumScroll()
 {
-	return ui::Engine::Ref().MomentumScroll;
+        return ui::Engine::Ref().MomentumScroll;
 }
 
 void OptionsModel::SetMomentumScroll(bool state)
 {
-	GlobalPrefs::Ref().Set("MomentumScroll", state);
-	ui::Engine::Ref().MomentumScroll = state;
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("MomentumScroll", state);
+        ui::Engine::Ref().MomentumScroll = state;
+        notifySettingsChanged();
 }
 
 bool OptionsModel::GetRedirectStd()
 {
-	return Client::Ref().GetRedirectStd();
+        return Client::Ref().GetRedirectStd();
 }
 
 void OptionsModel::SetRedirectStd(bool newRedirectStd)
 {
-	GlobalPrefs::Ref().Set("RedirectStd", newRedirectStd);
-	Client::Ref().SetRedirectStd(newRedirectStd);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("RedirectStd", newRedirectStd);
+        Client::Ref().SetRedirectStd(newRedirectStd);
+        notifySettingsChanged();
 }
 bool OptionsModel::GetAutoStartupRequest()
 {
-	return Client::Ref().GetAutoStartupRequest();
+        return Client::Ref().GetAutoStartupRequest();
 }
 
 void OptionsModel::SetAutoStartupRequest(bool newAutoStartupRequest)
 {
-	GlobalPrefs::Ref().Set("AutoStartupRequest", newAutoStartupRequest);
-	Client::Ref().SetAutoStartupRequest(newAutoStartupRequest);
-	notifySettingsChanged();
+        GlobalPrefs::Ref().Set("AutoStartupRequest", newAutoStartupRequest);
+        Client::Ref().SetAutoStartupRequest(newAutoStartupRequest);
+        notifySettingsChanged();
+}
+
+// TM-mode EM field settings (EMWave2 port)
+
+bool OptionsModel::GetEMEnabled()
+{
+        return gModel->GetEMEnabled();
+}
+
+void OptionsModel::SetEMEnabled(bool state)
+{
+        gModel->SetEMEnabled(state);
+        notifySettingsChanged();
+}
+
+int OptionsModel::GetEMCellSize()
+{
+        return gModel->GetEMCellSize();
+}
+
+void OptionsModel::SetEMCellSize(int cellSize)
+{
+        gModel->SetEMCellSize(cellSize);
+        notifySettingsChanged();
+}
+
+int OptionsModel::GetEMSourceMode()
+{
+        return gModel->GetEMSourceMode();
+}
+
+void OptionsModel::SetEMSourceMode(int sourceMode)
+{
+        gModel->SetEMSourceMode(sourceMode);
+        notifySettingsChanged();
+}
+
+float OptionsModel::GetEMFrequency()
+{
+        return gModel->GetEMFrequency();
+}
+
+void OptionsModel::SetEMFrequency(float frequency)
+{
+        gModel->SetEMFrequency(frequency);
+        notifySettingsChanged();
+}
+
+float OptionsModel::GetEMAux()
+{
+        return gModel->GetEMAux();
+}
+
+void OptionsModel::SetEMAux(float aux)
+{
+        gModel->SetEMAux(aux);
+        notifySettingsChanged();
+}
+
+int OptionsModel::GetEMBrightness()
+{
+        return gModel->GetEMBrightness();
+}
+
+void OptionsModel::SetEMBrightness(int brightness)
+{
+        gModel->SetEMBrightness(brightness);
+        notifySettingsChanged();
+}
+
+int OptionsModel::GetEMLineDensity()
+{
+        return gModel->GetEMLineDensity();
+}
+
+void OptionsModel::SetEMLineDensity(int lineDensity)
+{
+        gModel->SetEMLineDensity(lineDensity);
+        notifySettingsChanged();
+}
+
+int OptionsModel::GetEMSpeed()
+{
+        return gModel->GetEMSpeed();
+}
+
+void OptionsModel::SetEMSpeed(int speed)
+{
+        gModel->SetEMSpeed(speed);
+        notifySettingsChanged();
+}
+
+int OptionsModel::GetEMViewMode()
+{
+        return gModel->GetEMViewMode();
+}
+
+void OptionsModel::SetEMViewMode(int viewMode)
+{
+        gModel->SetEMViewMode(viewMode);
+        notifySettingsChanged();
+}
+
+void OptionsModel::ClearEMField()
+{
+        gModel->ClearEMField();
+}
+
+void OptionsModel::ClearEMOverrides()
+{
+        gModel->ClearEMOverrides();
 }
 
 void OptionsModel::notifySettingsChanged()
 {
-	for (size_t i = 0; i < observers.size(); i++)
-	{
-		observers[i]->NotifySettingsChanged(this);
-	}
+        for (size_t i = 0; i < observers.size(); i++)
+        {
+                observers[i]->NotifySettingsChanged(this);
+        }
 }
 
 OptionsModel::~OptionsModel() {

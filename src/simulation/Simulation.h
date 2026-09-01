@@ -33,251 +33,262 @@ struct vector2d;
 class Simulation;
 class Renderer;
 class Air;
+class EMField;
 class GameSave;
 
 class Parts
 {
-	int pfree;
+        int pfree;
 
 public:
-	std::array<Particle, NPART> data;
-	// initialized in clear_sim
-	int active;
+        std::array<Particle, NPART> data;
+        // initialized in clear_sim
+        int active;
 
-	operator const Particle *() const
-	{
-		return data.data();
-	}
+        operator const Particle *() const
+        {
+                return data.data();
+        }
 
-	operator Particle *()
-	{
-		return data.data();
-	}
+        operator Particle *()
+        {
+                return data.data();
+        }
 
-	Parts()
-	{
-		Reset();
-	}
+        Parts()
+        {
+                Reset();
+        }
 
-	Parts(const Parts &other) = default;
+        Parts(const Parts &other) = default;
 
-	Parts &operator =(const Parts &other)
-	{
-		std::copy(other.data.begin(), other.data.begin() + other.active, data.begin());
-		active = other.active;
-		pfree = other.pfree;
-		return *this;
-	}
+        Parts &operator =(const Parts &other)
+        {
+                std::copy(other.data.begin(), other.data.begin() + other.active, data.begin());
+                active = other.active;
+                pfree = other.pfree;
+                return *this;
+        }
 
-	Parts(const Parts &&other) = delete;
-	Parts &operator =(const Parts &&other) = delete;
+        Parts(const Parts &&other) = delete;
+        Parts &operator =(const Parts &&other) = delete;
 
-	void Reset();
-	void Free(int i);
-	int Alloc();
-	void Flatten();
+        void Reset();
+        void Free(int i);
+        int Alloc();
+        void Flatten();
 
-	bool MaxPartsReached() const
-	{
-		return pfree == -1;
-	}
+        bool MaxPartsReached() const
+        {
+                return pfree == -1;
+        }
 };
 
 struct RenderableSimulation
 {
-	GravityInput gravIn;
-	GravityOutput gravOut; // invariant: when grav is empty, this is in its default-constructed state
-	bool gravForceRecalc = true;
-	std::vector<sign> signs;
+        GravityInput gravIn;
+        GravityOutput gravOut; // invariant: when grav is empty, this is in its default-constructed state
+        bool gravForceRecalc = true;
+        std::vector<sign> signs;
 
-	int currentTick = 0;
-	int emp_decor = 0;
+        int currentTick = 0;
+        int emp_decor = 0;
 
-	playerst player;
-	playerst player2;
-	playerst fighters[MAX_FIGHTERS]; //Defined in Stickman.h
+        playerst player;
+        playerst player2;
+        playerst fighters[MAX_FIGHTERS]; //Defined in Stickman.h
 
-	float vx[YCELLS][XCELLS];
-	float vy[YCELLS][XCELLS];
-	float pv[YCELLS][XCELLS];
-	float hv[YCELLS][XCELLS];
+        float vx[YCELLS][XCELLS];
+        float vy[YCELLS][XCELLS];
+        float pv[YCELLS][XCELLS];
+        float hv[YCELLS][XCELLS];
 
-	unsigned char bmap[YCELLS][XCELLS];
-	unsigned char emap[YCELLS][XCELLS];
+        unsigned char bmap[YCELLS][XCELLS];
+        unsigned char emap[YCELLS][XCELLS];
 
-	Parts parts;
-	int pmap[YRES][XRES];
-	int photons[YRES][XRES];
+        // TM-mode EM wave field, ported from Paul Falstad's EMWave2 applet;
+        // owned by Simulation, null while EMField is compiled out of a context
+        EMField *emf = nullptr;
 
-	int aheat_enable = 0;
+        Parts parts;
+        int pmap[YRES][XRES];
+        int photons[YRES][XRES];
 
-	bool useLuaCallbacks = false;
+        int aheat_enable = 0;
+
+        bool useLuaCallbacks = false;
 };
 
 class Simulation : public RenderableSimulation
 {
 public:
-	GravityPtr grav;
-	std::unique_ptr<Air> air;
+        GravityPtr grav;
+        std::unique_ptr<Air> air;
+        std::unique_ptr<EMField> emfOwner;
 
-	RNG rng;
+        EMField *GetEMField()
+        {
+                return emfOwner.get();
+        }
 
-	int replaceModeSelected = 0;
-	int replaceModeFlags = 0;
-	int debug_nextToUpdate = 0;
-	int debug_mostRecentlyUpdated = -1; // -1 when between full update loops
-	int elementCount[PT_NUM];
-	int ISWIRE = 0;
-	bool force_stacking_check = false;
-	int emp_trigger_count = 0;
-	bool etrd_count_valid = false;
-	int etrd_life0_count = 0;
-	int lightningRecreate = 0;
-	bool gravWallChanged = false;
+        RNG rng;
 
-	Particle portalp[CHANNELS][8][80];
-	int wireless[CHANNELS][2];
+        int replaceModeSelected = 0;
+        int replaceModeFlags = 0;
+        int debug_nextToUpdate = 0;
+        int debug_mostRecentlyUpdated = -1; // -1 when between full update loops
+        int elementCount[PT_NUM];
+        int ISWIRE = 0;
+        bool force_stacking_check = false;
+        int emp_trigger_count = 0;
+        bool etrd_count_valid = false;
+        int etrd_life0_count = 0;
+        int lightningRecreate = 0;
+        bool gravWallChanged = false;
 
-	int CGOL = 0;
-	int GSPEED = 1;
-	unsigned int gol[YRES][XRES][5];
+        Particle portalp[CHANNELS][8][80];
+        int wireless[CHANNELS][2];
 
-	float fvx[YCELLS][XCELLS];
-	float fvy[YCELLS][XCELLS];
-	int Element_LOLZ_lolz[XRES/9][YRES/9];
-	int Element_LOVE_love[XRES/9][YRES/9];
-	int Element_PSTN_tempParts[std::max(XRES, YRES)];
-	int Element_PPIP_ppip_changed;
+        int CGOL = 0;
+        int GSPEED = 1;
+        unsigned int gol[YRES][XRES][5];
 
-	unsigned int pmap_count[YRES][XRES];
+        float fvx[YCELLS][XCELLS];
+        float fvy[YCELLS][XCELLS];
+        int Element_LOLZ_lolz[XRES/9][YRES/9];
+        int Element_LOVE_love[XRES/9][YRES/9];
+        int Element_PSTN_tempParts[std::max(XRES, YRES)];
+        int Element_PPIP_ppip_changed;
 
-	int edgeMode = EDGE_VOID;
-	int gravityMode = GRAV_VERTICAL;
-	float customGravityX = 0;
-	float customGravityY = 0;
-	int legacy_enable = 0;
-	int water_equal_test = 0;
-	int pretty_powder = 0;
-	int sandcolour_frame = 0;
-	int deco_space = DECOSPACE_SRGB;
+        unsigned int pmap_count[YRES][XRES];
 
-	// initialized in clear_sim
-	bool elementRecount;
-	unsigned char fighcount; //Contains the number of fighters
-	uint64_t frameCount;
-	bool ensureDeterminism;
+        int edgeMode = EDGE_VOID;
+        int gravityMode = GRAV_VERTICAL;
+        float customGravityX = 0;
+        float customGravityY = 0;
+        int legacy_enable = 0;
+        int water_equal_test = 0;
+        int pretty_powder = 0;
+        int sandcolour_frame = 0;
+        int deco_space = DECOSPACE_SRGB;
 
-	// initialized very late >_>
-	int NUM_PARTS;
-	int sandcolour;
-	int sandcolour_interface;
+        // initialized in clear_sim
+        bool elementRecount;
+        unsigned char fighcount; //Contains the number of fighters
+        uint64_t frameCount;
+        bool ensureDeterminism;
 
-	void Load(const GameSave *save, bool includePressure, Vec2<int> blockP); // block coordinates
-	std::unique_ptr<GameSave> Save(bool includePressure, Rect<int> partR); // particle coordinates
-	void SaveSimOptions(GameSave &gameSave);
-	SimulationSample GetSample(int x, int y);
+        // initialized very late >_>
+        int NUM_PARTS;
+        int sandcolour;
+        int sandcolour_interface;
 
-	std::unique_ptr<Snapshot> CreateSnapshot() const;
-	void Restore(const Snapshot &snap);
+        void Load(const GameSave *save, bool includePressure, Vec2<int> blockP); // block coordinates
+        std::unique_ptr<GameSave> Save(bool includePressure, Rect<int> partR); // particle coordinates
+        void SaveSimOptions(GameSave &gameSave);
+        SimulationSample GetSample(int x, int y);
 
-	int is_blocking(int t, int x, int y) const;
-	int is_boundary(int pt, int x, int y) const;
-	int find_next_boundary(int pt, int *x, int *y, int dm, int *em, bool reverse) const;
-	void photoelectric_effect(int nx, int ny);
-	int do_move(int i, int x, int y, float nxf, float nyf);
-	bool move(int i, int x, int y, float nxf, float nyf);
-	int try_move(int i, int x, int y, int nx, int ny);
-	int eval_move(int pt, int nx, int ny, unsigned *rr) const;
+        std::unique_ptr<Snapshot> CreateSnapshot() const;
+        void Restore(const Snapshot &snap);
 
-	struct PlanMoveResult
-	{
-		int fin_x, fin_y, clear_x, clear_y;
-		float fin_xf, fin_yf, clear_xf, clear_yf;
-		float vx, vy;
-	};
-	template<bool UpdateEmap, class Sim>
-	static PlanMoveResult PlanMove(Sim &sim, int i, int x, int y);
+        int is_blocking(int t, int x, int y) const;
+        int is_boundary(int pt, int x, int y) const;
+        int find_next_boundary(int pt, int *x, int *y, int dm, int *em, bool reverse) const;
+        void photoelectric_effect(int nx, int ny);
+        int do_move(int i, int x, int y, float nxf, float nyf);
+        bool move(int i, int x, int y, float nxf, float nyf);
+        int try_move(int i, int x, int y, int nx, int ny);
+        int eval_move(int pt, int nx, int ny, unsigned *rr) const;
 
-	bool IsWallBlocking(int x, int y, int type) const;
-	void create_cherenkov_photon(int pp);
-	void create_gain_photon(int pp);
-	void kill_part(int i);
-	bool FloodFillPmapCheck(int x, int y, int type) const;
-	int flood_prop(int x, int y, const AccessProperty &changeProperty);
-	bool flood_water(int x, int y, int i);
-	int FloodINST(int x, int y);
-	void detach(int i);
-	bool part_change_type(int i, int x, int y, int t);
-	//int InCurrentBrush(int i, int j, int rx, int ry);
-	//int get_brush_flags();
-	int create_part(int p, int x, int y, int t, int v = -1);
-	int createPartTempVel(int i, int x, int y, int t);
-	void delete_part(int x, int y);
-	void get_sign_pos(int i, int *x0, int *y0, int *w, int *h);
-	int is_wire(int x, int y);
-	int is_wire_off(int x, int y);
-	void set_emap(int x, int y);
-	int parts_avg(int ci, int ni, int t);
-	virtual void UpdateParticles(int start, int end) = 0; // Dispatches an update to the range [start, end).
-	void SimulateGoL();
-	void RecalcFreeParticles(bool do_life_dec);
-	void CheckStacking();
-	void BeforeSim(bool willUpdate);
-	void AfterSim();
-	void clear_area(int area_x, int area_y, int area_w, int area_h);
+        struct PlanMoveResult
+        {
+                int fin_x, fin_y, clear_x, clear_y;
+                float fin_xf, fin_yf, clear_xf, clear_yf;
+                float vx, vy;
+        };
+        template<bool UpdateEmap, class Sim>
+        static PlanMoveResult PlanMove(Sim &sim, int i, int x, int y);
 
-	void SetEdgeMode(int newEdgeMode);
-	void SetDecoSpace(int newDecoSpace);
+        bool IsWallBlocking(int x, int y, int type) const;
+        void create_cherenkov_photon(int pp);
+        void create_gain_photon(int pp);
+        void kill_part(int i);
+        bool FloodFillPmapCheck(int x, int y, int type) const;
+        int flood_prop(int x, int y, const AccessProperty &changeProperty);
+        bool flood_water(int x, int y, int i);
+        int FloodINST(int x, int y);
+        void detach(int i);
+        bool part_change_type(int i, int x, int y, int t);
+        //int InCurrentBrush(int i, int j, int rx, int ry);
+        //int get_brush_flags();
+        int create_part(int p, int x, int y, int t, int v = -1);
+        int createPartTempVel(int i, int x, int y, int t);
+        void delete_part(int x, int y);
+        void get_sign_pos(int i, int *x0, int *y0, int *w, int *h);
+        int is_wire(int x, int y);
+        int is_wire_off(int x, int y);
+        void set_emap(int x, int y);
+        int parts_avg(int ci, int ni, int t);
+        virtual void UpdateParticles(int start, int end) = 0; // Dispatches an update to the range [start, end).
+        void SimulateGoL();
+        void RecalcFreeParticles(bool do_life_dec);
+        void CheckStacking();
+        void BeforeSim(bool willUpdate);
+        void AfterSim();
+        void clear_area(int area_x, int area_y, int area_w, int area_h);
 
-	//Drawing Deco
-	void ApplyDecoration(int x, int y, int colR, int colG, int colB, int colA, int mode);
-	void ApplyDecorationPoint(int x, int y, int colR, int colG, int colB, int colA, int mode, Brush const &cBrush);
-	void ApplyDecorationLine(int x1, int y1, int x2, int y2, int colR, int colG, int colB, int colA, int mode, Brush const &cBrush);
-	void ApplyDecorationBox(int x1, int y1, int x2, int y2, int colR, int colG, int colB, int colA, int mode);
-	bool ColorCompare(const RendererFrame &frame, int x, int y, int replaceR, int replaceG, int replaceB);
-	void ApplyDecorationFill(const RendererFrame &frame, int x, int y, int colR, int colG, int colB, int colA, int replaceR, int replaceG, int replaceB);
+        void SetEdgeMode(int newEdgeMode);
+        void SetDecoSpace(int newDecoSpace);
 
-	//Drawing Walls
-	int CreateWalls(int x, int y, int rx, int ry, int wall, Brush const *cBrush);
-	void CreateWallLine(int x1, int y1, int x2, int y2, int rx, int ry, int wall, Brush const *cBrush);
-	void CreateWallBox(int x1, int y1, int x2, int y2, int wall);
-	int FloodWalls(int x, int y, int wall, int bm);
+        //Drawing Deco
+        void ApplyDecoration(int x, int y, int colR, int colG, int colB, int colA, int mode);
+        void ApplyDecorationPoint(int x, int y, int colR, int colG, int colB, int colA, int mode, Brush const &cBrush);
+        void ApplyDecorationLine(int x1, int y1, int x2, int y2, int colR, int colG, int colB, int colA, int mode, Brush const &cBrush);
+        void ApplyDecorationBox(int x1, int y1, int x2, int y2, int colR, int colG, int colB, int colA, int mode);
+        bool ColorCompare(const RendererFrame &frame, int x, int y, int replaceR, int replaceG, int replaceB);
+        void ApplyDecorationFill(const RendererFrame &frame, int x, int y, int colR, int colG, int colB, int colA, int replaceR, int replaceG, int replaceB);
 
-	//Drawing Particles
-	int CreateParts(int p, int positionX, int positionY, int c, Brush const &cBrush, int flags);
-	int CreateParts(int p, int x, int y, int rx, int ry, int c, int flags);
-	int CreatePartFlags(int p, int x, int y, int c, int flags);
-	void CreateLine(int x1, int y1, int x2, int y2, int c, Brush const &cBrush, int flags);
-	void CreateLine(int x1, int y1, int x2, int y2, int c);
-	void CreateBox(int p, int x1, int y1, int x2, int y2, int c, int flags);
-	int FloodParts(int x, int y, int c, int cm, int flags);
+        //Drawing Walls
+        int CreateWalls(int x, int y, int rx, int ry, int wall, Brush const *cBrush);
+        void CreateWallLine(int x1, int y1, int x2, int y2, int rx, int ry, int wall, Brush const *cBrush);
+        void CreateWallBox(int x1, int y1, int x2, int y2, int wall);
+        int FloodWalls(int x, int y, int wall, int bm);
 
-	void GetGravityField(int x, int y, float particleGrav, float newtonGrav, float & pGravX, float & pGravY) const;
+        //Drawing Particles
+        int CreateParts(int p, int positionX, int positionY, int c, Brush const &cBrush, int flags);
+        int CreateParts(int p, int x, int y, int rx, int ry, int c, int flags);
+        int CreatePartFlags(int p, int x, int y, int c, int flags);
+        void CreateLine(int x1, int y1, int x2, int y2, int c, Brush const &cBrush, int flags);
+        void CreateLine(int x1, int y1, int x2, int y2, int c);
+        void CreateBox(int p, int x1, int y1, int x2, int y2, int c, int flags);
+        int FloodParts(int x, int y, int c, int cm, int flags);
 
-	int get_wavelength_bin(int *wm);
-	struct GetNormalResult
-	{
-		bool success;
-		float nx, ny;
-		int lx, ly, rx, ry;
-	};
-	GetNormalResult get_normal(int pt, int x, int y, float dx, float dy) const;
-	template<bool PhotoelectricEffect, class Sim>
-	static GetNormalResult get_normal_interp(Sim &sim, int pt, float x0, float y0, float dx, float dy);
-	void clear_sim();
-	Simulation();
-	virtual ~Simulation();
+        void GetGravityField(int x, int y, float particleGrav, float newtonGrav, float & pGravX, float & pGravY) const;
 
-	void EnableNewtonianGravity(bool enable);
+        int get_wavelength_bin(int *wm);
+        struct GetNormalResult
+        {
+                bool success;
+                float nx, ny;
+                int lx, ly, rx, ry;
+        };
+        GetNormalResult get_normal(int pt, int x, int y, float dx, float dy) const;
+        template<bool PhotoelectricEffect, class Sim>
+        static GetNormalResult get_normal_interp(Sim &sim, int pt, float x0, float y0, float dx, float dy);
+        void clear_sim();
+        Simulation();
+        virtual ~Simulation();
 
-	FrameTime *frameTime = nullptr;
+        void EnableNewtonianGravity(bool enable);
 
-	static std::unique_ptr<Simulation> Factory();
+        FrameTime *frameTime = nullptr;
+
+        static std::unique_ptr<Simulation> Factory();
 
 private:
-	CoordStack& getCoordStackSingleton();
+        CoordStack& getCoordStackSingleton();
 
-	void ResetNewtonianGravity(GravityInput newGravIn, GravityOutput newGravOut);
-	void DispatchNewtonianGravity();
-	void UpdateGravityMask();
+        void ResetNewtonianGravity(GravityInput newGravIn, GravityOutput newGravOut);
+        void DispatchNewtonianGravity();
+        void UpdateGravityMask();
 };
