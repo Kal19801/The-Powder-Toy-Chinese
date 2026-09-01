@@ -54,7 +54,7 @@ constexpr float EM_MEDIUM_MAX_INDEX = .5f;
 //size 1 gives a field on the exact particle grid (1 cell = 1 particle, full alignment)
 constexpr int EM_CELL_SIZES[] = { 1, 2, 4, 8, 16 };
 constexpr int EM_CELL_SIZE_COUNT = int(sizeof(EM_CELL_SIZES) / sizeof(EM_CELL_SIZES[0]));
-constexpr int EM_CELL_SIZE_DEFAULT = 4;
+constexpr int EM_CELL_SIZE_DEFAULT = 1;
 //edge damping margin, in EM cells, scaled from the applet's fixed 20 cell margin at a 4px cell size
 constexpr int EM_MARGIN_AT_4 = 20;
 //scale of Joule heating applied to real conducting particles sitting in cells that carry induced current
@@ -96,7 +96,7 @@ constexpr float EM_DRIFT_NOISE = 1e-6f;
 constexpr float EM_TADD_SUB = 0.25f;
 // wave sub-steps per frame indexed by the speed setting (0 = 0.5x, 1 = 1x, 2 = 2x);
 // 1x matches the applet, which integrates twice per frame at its default speed bar
-constexpr int   EM_SUBSTEPS[3] = { 1, 2, 4 };
+constexpr int   EM_SUBSTEPS[3] = { 1, 2, 4, 8, 16 };
 // stability bound of the leapfrog wave update: the per-cell acceleration scale
 // c = perm_oe/perm_neighbour must satisfy c * |lambda_max| * tadd^2 <= 4 with
 // |lambda_max| = 2 for the /4 scaled 5-point Laplacian, i.e. c <= 2/tadd^2 = 32
@@ -207,7 +207,7 @@ constexpr int EM_AUX_NONE  = 0;
 constexpr int EM_AUX_PHASE = 1;
 constexpr int EM_AUX_FREQ  = 2;
 
-constexpr int EMVIEW_DEFAULT = EMVIEW_OFF;
+constexpr int EMVIEW_DEFAULT = EMVIEW_E_B_LINES_J;
 constexpr int EMSRC_DEFAULT  = EMSRC_NONE;
 
 constexpr int NGOL = 24;

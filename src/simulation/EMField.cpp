@@ -1367,7 +1367,7 @@ void EMField::Update()
         // this keeps the CFL bound (perm contrast <= 2/tadd^2 = 32) satisfied for
         // every speed setting, matches the applet dynamics much more closely than
         // one large step per frame, and conserves energy in the linear regime
-        int substeps = EM_SUBSTEPS[std::clamp(speed, 0, 2)];
+        int substeps = EM_SUBSTEPS[std::clamp(speed, 0, 4)];
         double tadd = EM_TADD_SUB;
         double tadd2 = tadd * tadd;
 

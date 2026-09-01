@@ -192,7 +192,7 @@ GameModel::GameModel(GameView *newView):
                 emf->aux = std::clamp(prefs.Get("Simulation.EMField.Aux", emf->aux), 1.0f, 40.0f);
                 emf->brightness = std::clamp(prefs.Get("Simulation.EMField.Brightness", emf->brightness), 1, 500);
                 emf->lineDensity = std::clamp(prefs.Get("Simulation.EMField.LineDensity", emf->lineDensity), 10, 100);
-                emf->speed = std::clamp(prefs.Get("Simulation.EMField.Speed", emf->speed), 0, 2);
+                emf->speed = std::clamp(prefs.Get("Simulation.EMField.Speed", emf->speed), 0, 4);
                 rendererSettings.emViewMode = prefs.Get("Simulation.EMField.ViewMode", EMVIEW_DEFAULT);
                 if (rendererSettings.emViewMode < 0 || rendererSettings.emViewMode >= EMVIEW_COUNT)
                 {

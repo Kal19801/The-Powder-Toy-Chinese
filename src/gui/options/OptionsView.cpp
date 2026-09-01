@@ -381,7 +381,7 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
         emCellSize = addDropDown(ByteString("电磁场网格大小").FromUtf8(), {
                 { ByteString("1 像素").FromUtf8(), 1 },
                 { ByteString("2 像素").FromUtf8(), 2 },
-                { ByteString("4 像素)").FromUtf8(), 4 },
+                { ByteString("4 像素").FromUtf8(), 4 },
                 { ByteString("8 像素").FromUtf8(), 8 },
                 { ByteString("16 像素").FromUtf8(), 16 },
         }, [this] {
@@ -454,6 +454,8 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
                 { "0.5x", 0 },
                 { "1x", 1 },
                 { "2x", 2 },
+                { "4x", 3 },
+                { "8x", 4 },
         }, [this] {
                 c->SetEMSpeed(emSpeed->GetOption().second);
         });

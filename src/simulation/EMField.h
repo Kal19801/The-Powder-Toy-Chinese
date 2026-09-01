@@ -247,6 +247,6 @@ public:
         // propagation speed so particles can never outrun the field
         float MaxParticleSpeed() const
         {
-                return EM_CELLS_PER_SUBSTEP * cellSize * float(EM_SUBSTEPS[speed < 0 || speed > 2 ? 1 : speed]);
+                return EM_CELLS_PER_SUBSTEP * cellSize * float(EM_SUBSTEPS[speed < 0 || speed > 4 ? 1 : speed]);
         }
 };
