@@ -96,7 +96,7 @@ constexpr float EM_DRIFT_NOISE = 1e-6f;
 constexpr float EM_TADD_SUB = 0.25f;
 // wave sub-steps per frame indexed by the speed setting (0 = 0.5x, 1 = 1x, 2 = 2x);
 // 1x matches the applet, which integrates twice per frame at its default speed bar
-constexpr int   EM_SUBSTEPS[3] = { 1, 2, 4, 8, 16 };
+constexpr int   EM_SUBSTEPS[5] = { 1, 2, 4, 8, 16 };
 // stability bound of the leapfrog wave update: the per-cell acceleration scale
 // c = perm_oe/perm_neighbour must satisfy c * |lambda_max| * tadd^2 <= 4 with
 // |lambda_max| = 2 for the /4 scaled 5-point Laplacian, i.e. c <= 2/tadd^2 = 32

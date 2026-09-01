@@ -217,7 +217,7 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
                 UpdateEdgePressure(value, defocus);
         });
         {
-                edgeVelocityChange = new ui::Button(ui::Point(Size.X-95, currentY), ui::Point(80, 16), "改变");
+                edgeVelocityChange = new ui::Button(ui::Point(Size.X-95, currentY), ui::Point(80, 16), "修改");
                 scrollPanel->AddChild(edgeVelocityChange);
                 edgeVelocityChange->SetActionCallback({ [this] {
                         new DirectionSelector(ui::Point(-1, -1), 0.05f, 40, edgeVelocityX, edgeVelocityY, "空气流速", [this](float x, float y) {
