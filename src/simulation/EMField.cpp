@@ -268,22 +268,29 @@ void EMField::ApplyGridGeometry()
                 pmlWy.clear();
                 pmlWy.shrink_to_fit();
         }
-        // visible canvas is always centred on the simulation domain; with
-        // regionScale < 1 the offset goes NEGATIVE (the domain is smaller than
-        // the canvas) - that is intentional and handled via the domain-bounds
-        // checks in CellIndex/PixelInDomain and the renderer
-        int visCanvasW = XRES / cellSize; // cells of the visible canvas
-        int visCanvasH = YRES / cellSize;
-        renderOffX = padL + (visW - visCanvasW) / 2;
-        renderOffY = padT + (visH - visCanvasH) / 2;
+        // visible canvas window in cells; at regionScale < 1 the domain is
+        // smaller than the canvas and the renderer MAGNIFIES it by renderScale
+        // (0.5x fix: the field still covers the full screen - the space is
+        // half, not the display). At regionScale >= 1 the canvas is a 1:1
+        // window into the (possibly larger) domain.
+        renderScale = (regionScale < 1.0f) ? int(1.0f / regionScale + 0.5f) : 1;
+        if (renderScale < 1)
+        {
+                renderScale = 1;
+        }
+        renderW = XRES / (cellSize * renderScale);
+        renderH = YRES / (cellSize * renderScale);
+        // visible window is always centred on the simulation domain
+        renderOffX = padL + (visW - renderW) / 2;
+        renderOffY = padT + (visH - renderH) / 2;
         forceBarValue = frequency;
         forceTimeZero = 0;
         t = 0;
         filterCount = 0;
         SetupSources();
         SetDamping();
-        EMF_DBG("EMField: grid %dx%d cells (cell %dpx, region %g, boundary %d, pad %d, vis %dx%d, margin %d, renderOff %d,%d)\n",
-                gw, gh, cellSize, double(regionScale), boundaryMode, padL, visW, visH, margin, renderOffX, renderOffY);
+        EMF_DBG("EMField: grid %dx%d cells (cell %dpx, region %g, boundary %d, pad %d, vis %dx%d, margin %d, renderScale %d, render window %dx%d, renderOff %d,%d)\n",
+                gw, gh, cellSize, double(regionScale), boundaryMode, padL, visW, visH, margin, renderScale, renderW, renderH, renderOffX, renderOffY);
 }
 
 void EMField::NotifyCellChanged()
@@ -380,13 +387,17 @@ void EMField::VacuumCell(int gi)
 int EMField::CellIndex(int px, int py) const
 {
         // map a pixel on the visible canvas to the corresponding cell of the
-        // simulation domain. With regionScale > 1 the simulation extends beyond
-        // the visible canvas, so the cell offset is renderOffX/Y (centred on
-        // the domain); with regionScale = 1 renderOffX == padL so this reduces
-        // to the plain pixel -> cell mapping; with regionScale < 1 pixels
+        // simulation domain. Screen pixels per cell = cellSize * renderScale:
+        // with regionScale > 1 the simulation extends beyond the visible
+        // canvas, so the cell offset is renderOffX/Y (centred on the domain);
+        // with regionScale = 1 renderOffX == padL so this reduces to the plain
+        // pixel -> cell mapping; with regionScale = 0.5 the domain is half the
+        // canvas and rendered magnified 2x, so a screen pixel maps to
+        // px / (cellSize*2) in domain space; pixels whose domain position is
         // outside the domain clamp onto the nearest domain edge cell.
-        int cx = std::clamp(px / cellSize, 0, XRES / cellSize - 1) + renderOffX;
-        int cy = std::clamp(py / cellSize, 0, YRES / cellSize - 1) + renderOffY;
+        int cs = cellSize * renderScale;
+        int cx = std::clamp(px / cs, 0, renderW - 1) + renderOffX;
+        int cy = std::clamp(py / cs, 0, renderH - 1) + renderOffY;
         cx = std::clamp(cx, padL, padL + visW - 1);
         cy = std::clamp(cy, padT, padT + visH - 1);
         return cx + cy * gw;
@@ -394,10 +405,15 @@ int EMField::CellIndex(int px, int py) const
 
 bool EMField::PixelInDomain(int px, int py) const
 {
-        // unclamped inverse of CellIndex: out-of-domain pixels must NOT inject
-        // material into the field (with regionScale < 1 they simply have none)
-        int cx = px / cellSize + renderOffX;
-        int cy = py / cellSize + renderOffY;
+        // exact inverse of the render mapping: every pixel the renderer draws
+        // from a cell counts as in-domain. The last partial cell column/row of
+        // the canvas (XRES not divisible by the zoomed cell size, e.g. cs=8:
+        // 612/8 = 76.5) clamps into the nearest cell, same as CellIndex - the
+        // field visually covers the whole canvas and tools/particles at the
+        // canvas edge agree on which cell they belong to.
+        int cs = cellSize * renderScale;
+        int cx = std::min(px / cs, renderW - 1) + renderOffX;
+        int cy = std::min(py / cs, renderH - 1) + renderOffY;
         return cx >= padL && cx < padL + visW && cy >= padT && cy < padT + visH;
 }
 
@@ -424,18 +440,28 @@ int EMField::CellTypeOf(const Cell &oe)
 void EMField::SyncMaterials()
 {
         emwSources.clear();
-        for (auto &cell : cells)
+        // PERF: only the simulated domain rectangle can carry materials - the
+        // OPEN absorber band and the regionScale > 1 padding are vacuum by
+        // construction (every material writer checks PixelInDomain), and the
+        // PERIODIC ghost ring is re-copied from the domain edge before every
+        // sub-step. Iterating just the domain saves the full-grid sweep on the
+        // padded geometries; behaviour is bit-identical.
+        for (int y = padT; y < padT + visH; y++)
         {
-                cell.perm = 1;
-                cell.conductivity = 0;
-                cell.mx = 0;
-                cell.my = 0;
-                cell.medium = 0;
-                cell.jzext = 0;
-                cell.resonant = false;
-                cell.heatable = false;
-                cell.magpowder = false;
-                cell.magsolid = false;
+                for (int x = padL; x < padL + visW; x++)
+                {
+                        auto &cell = cells[x + y * gw];
+                        cell.perm = 1;
+                        cell.conductivity = 0;
+                        cell.mx = 0;
+                        cell.my = 0;
+                        cell.medium = 0;
+                        cell.jzext = 0;
+                        cell.resonant = false;
+                        cell.heatable = false;
+                        cell.magpowder = false;
+                        cell.magsolid = false;
+                }
         }
 
         auto &parts = sim.parts;
@@ -672,78 +698,92 @@ void EMField::SyncMaterials()
         // exactly like the adjust modes of the applet which only affect matching cells.
         // Overrides on cells that lost all of their underlying material are wiped, so
         // erasing particles never leaves invisible EM leftovers behind.
-        for (auto &cell : cells)
+        // PERF: domain rectangle only, see the reset pass above - overrides can
+        // never exist outside the domain.
+        for (int oy = padT; oy < padT + visH; oy++)
         {
-                // task 10: the J override applies wherever a current can flow:
-                // dedicated current-source cells AND conductor cells (exciting a
-                // current inside an EM-zone conductor). Cells that lost their
-                // material get the override wiped below anyway.
-                if (cell.ovMask & EM_OV_JZ && (cell.jzext != 0 || cell.conductivity > 0))
+                for (int ox = padL; ox < padL + visW; ox++)
                 {
-                        // the override carries the full signed current
-                        cell.jzext = double(std::clamp(cell.ovJz, -EM_JZEXT_MAX, EM_JZEXT_MAX));
-                }
-                if (cell.perm > 1) // ferromagnet
-                {
-                        if (cell.ovMask & EM_OV_PERM)
+                        auto &cell = cells[ox + oy * gw];
+                        // task 10: the J override applies wherever a current can flow:
+                        // dedicated current-source cells AND conductor cells (exciting a
+                        // current inside an EM-zone conductor). Cells that lost their
+                        // material get the override wiped below anyway.
+                        if (cell.ovMask & EM_OV_JZ && (cell.jzext != 0 || cell.conductivity > 0))
                         {
-                                cell.perm = ClampPerm(cell.ovPerm, PermMax());
+                                // the override carries the full signed current
+                                cell.jzext = double(std::clamp(cell.ovJz, -EM_JZEXT_MAX, EM_JZEXT_MAX));
                         }
-                }
-                // magnetization overrides apply to ferromagnets AND to painted magnet
-                // cells (applet TYPE_MAGNET), which carry perm == 1; the applet's
-                // ADJ_MAG_STR sets the magnitude keeping the direction, while
-                // ADJ_MAG_DIR sets the direction keeping the magnitude
-                if (cell.perm > 1 || cell.mx != 0 || cell.my != 0)
-                {
-                        float mag = std::sqrt(cell.mx * cell.mx + cell.my * cell.my);
-                        if (cell.ovMask & EM_OV_MAGSTR)
+                        if (cell.perm > 1) // ferromagnet
                         {
-                                mag = std::clamp(cell.ovMag, 0.01f, 2.0f);
-                        }
-                        if (cell.ovMask & EM_OV_MAGDIR)
-                        {
-                                float angle = cell.ovDir * 2.0f * std::numbers::pi_v<float>;
-                                cell.mx = mag * std::cos(angle);
-                                cell.my = -mag * std::sin(angle);
-                        }
-                        else if ((cell.ovMask & EM_OV_MAGSTR) && (cell.mx != 0 || cell.my != 0))
-                        {
-                                // magnitude set by MAG_STR, direction preserved
-                                float cur = std::sqrt(cell.mx * cell.mx + cell.my * cell.my);
-                                if (cur > 0)
+                                if (cell.ovMask & EM_OV_PERM)
                                 {
-                                        cell.mx *= mag / cur;
-                                        cell.my *= mag / cur;
+                                        cell.perm = ClampPerm(cell.ovPerm, PermMax());
                                 }
                         }
-                }
-                else if (cell.ovMask & EM_OV_CONDUCT && cell.conductivity > 0)
-                {
-                        cell.conductivity = std::clamp(cell.ovConduct, 0.01f, 1.0f);
-                }
-                if (cell.medium > 0 && (cell.ovMask & EM_OV_MEDIUM))
-                {
-                        cell.medium = int(std::clamp(cell.ovMedium, 1.0f, float(EM_MEDIUM_MAX)));
-                }
-                // wipe overrides from cells whose material is gone; a painted
-                // conductor whose particles were erased must not resurrect its
-                // conductivity/adjustments when something else is drawn there later
-                if (!(cell.perm != 1 || cell.conductivity > 0 || cell.medium > 0 ||
-                      cell.mx != 0 || cell.my != 0 || cell.resonant || cell.jzext != 0))
-                {
-                        if (cell.ovMask)
+                        // magnetization overrides apply to ferromagnets AND to painted magnet
+                        // cells (applet TYPE_MAGNET), which carry perm == 1; the applet's
+                        // ADJ_MAG_STR sets the magnitude keeping the direction, while
+                        // ADJ_MAG_DIR sets the direction keeping the magnitude
+                        if (cell.perm > 1 || cell.mx != 0 || cell.my != 0)
                         {
-                                ClearCellOverrides(int(&cell - cells.data()));
+                                float mag = std::sqrt(cell.mx * cell.mx + cell.my * cell.my);
+                                if (cell.ovMask & EM_OV_MAGSTR)
+                                {
+                                        mag = std::clamp(cell.ovMag, 0.01f, 2.0f);
+                                }
+                                if (cell.ovMask & EM_OV_MAGDIR)
+                                {
+                                        float angle = cell.ovDir * 2.0f * std::numbers::pi_v<float>;
+                                        cell.mx = mag * std::cos(angle);
+                                        cell.my = -mag * std::sin(angle);
+                                }
+                                else if ((cell.ovMask & EM_OV_MAGSTR) && (cell.mx != 0 || cell.my != 0))
+                                {
+                                        // magnitude set by MAG_STR, direction preserved
+                                        float cur = std::sqrt(cell.mx * cell.mx + cell.my * cell.my);
+                                        if (cur > 0)
+                                        {
+                                                cell.mx *= mag / cur;
+                                                cell.my *= mag / cur;
+                                        }
+                                }
                         }
-                }
-                // induced current only exists inside conductors and resonant media;
-                // when the conductor disappears (particles erased) its jz MUST be
-                // dropped, otherwise the empty cell keeps radiating forever - that
-                // was the "erased metal leaves a blob in the background" bug
-                if (cell.conductivity <= 0 && !cell.resonant && cell.jz != 0)
-                {
-                        cell.jz = 0;
+                        // EMADJ fix: the conductivity override used to sit in an `else if`
+                        // behind the magnet branch, so it was silently dropped on every
+                        // cell that ALSO carries magnetization/permeability (EMFM, FE,
+                        // FEPW: perm 3..5 AND conductivity .4..5). On exactly those
+                        // materials the EMADJ add mode could never raise the conductivity
+                        // (the override was stored but never became effective), which is
+                        // the "加法模式无法连续增加" report. Conductivity and magnetization
+                        // are orthogonal cell properties, so apply it unconditionally.
+                        if (cell.ovMask & EM_OV_CONDUCT && cell.conductivity > 0)
+                        {
+                                cell.conductivity = std::clamp(cell.ovConduct, 0.01f, 1.0f);
+                        }
+                        if (cell.medium > 0 && (cell.ovMask & EM_OV_MEDIUM))
+                        {
+                                cell.medium = int(std::clamp(cell.ovMedium, 1.0f, float(EM_MEDIUM_MAX)));
+                        }
+                        // wipe overrides from cells whose material is gone; a painted
+                        // conductor whose particles were erased must not resurrect its
+                        // conductivity/adjustments when something else is drawn there later
+                        if (!(cell.perm != 1 || cell.conductivity > 0 || cell.medium > 0 ||
+                              cell.mx != 0 || cell.my != 0 || cell.resonant || cell.jzext != 0))
+                        {
+                                if (cell.ovMask)
+                                {
+                                        ClearCellOverrides(ox + oy * gw);
+                                }
+                        }
+                        // induced current only exists inside conductors and resonant media;
+                        // when the conductor disappears (particles erased) its jz MUST be
+                        // dropped, otherwise the empty cell keeps radiating forever - that
+                        // was the "erased metal leaves a blob in the background" bug
+                        if (cell.conductivity <= 0 && !cell.resonant && cell.jz != 0)
+                        {
+                                cell.jz = 0;
+                        }
                 }
         }
 
@@ -754,9 +794,12 @@ void EMField::CalcBoundaries()
 {
         // Mark all cells where the permeability, medium, magnetization or resonance
         // differs from one of the neighbours; the wave equation needs the hard path there.
-        for (int y = 1; y < gh - 1; y++)
+        // PERF: the wave loops only ever read the flag inside the simulated domain
+        // rectangle, so the sweep stays inside it too (the padded band is uniform
+        // vacuum and its flag stays false from the Cell default).
+        for (int y = std::max(1, padT); y < std::min(gh - 1, padT + visH); y++)
         {
-                for (int x = 1; x < gw - 1; x++)
+                for (int x = std::max(1, padL); x < std::min(gw - 1, padL + visW); x++)
                 {
                         int gi = x + y * gw;
                         auto &oe = cells[gi];
@@ -1127,9 +1170,18 @@ void EMField::ApplyFieldForces(int substeps)
 {
         auto &parts = sim.parts;
         (void)parts;
-        for (int cy = 1; cy < gh - 1; cy++)
+        // PERF: iterate the visible canvas window only - cells outside it can
+        // never touch particles (pmap is canvas-sized), the old full-grid loop
+        // just burned a bounds check per band/padding cell per frame. Bit
+        // identical: the skipped cells all hit the px0/py0 continue below.
+        int cs = cellSize * renderScale; // screen px per cell (0.5x fix: zoomed)
+        int cx0 = std::max(1, renderOffX);
+        int cy0 = std::max(1, renderOffY);
+        int cx1 = std::min(gw - 1, renderOffX + renderW);
+        int cy1 = std::min(gh - 1, renderOffY + renderH);
+        for (int cy = cy0; cy < cy1; cy++)
         {
-                for (int cx = 1; cx < gw - 1; cx++)
+                for (int cx = cx0; cx < cx1; cx++)
                 {
                         int gi = cx + cy * gw;
                         auto &cell = cells[gi];
@@ -1137,11 +1189,8 @@ void EMField::ApplyFieldForces(int substeps)
                         // the visible canvas is centred on the simulation
                         // domain, so cell (cx,cy) maps to pixel
                         // ((cx - renderOffX) * cs, (cy - renderOffY) * cs).
-                        // With regionScale < 1 renderOffX/Y are negative and
-                        // the px0 bounds check below skips everything that
-                        // maps outside the canvas.
-                        int px0 = (cx - renderOffX) * cellSize;
-                        int py0 = (cy - renderOffY) * cellSize;
+                        int px0 = (cx - renderOffX) * cs;
+                        int py0 = (cy - renderOffY) * cs;
                         if (px0 < 0 || py0 < 0 || px0 >= XRES || py0 >= YRES)
                         {
                                 continue; // cell outside the visible canvas
@@ -1162,9 +1211,9 @@ void EMField::ApplyFieldForces(int substeps)
                                 // field energy, diamagnets (perm < 1) down it; the normaliser
                                 // keeps the force bounded while decaying like 1/L far away
                                 double sign = cell.perm > 1 ? 1.0 : -1.0;
-                                for (int sy = 0; sy < cellSize; sy++)
+                                for (int sy = 0; sy < cs; sy++)
                                 {
-                                        for (int sx = 0; sx < cellSize; sx++)
+                                        for (int sx = 0; sx < cs; sx++)
                                         {
                                                 int px = std::min(px0 + sx, XRES - 1);
                                                 int py = std::min(py0 + sy, YRES - 1);
@@ -1208,9 +1257,9 @@ void EMField::ApplyFieldForces(int substeps)
                                 float fyc = std::clamp(float(mfy), -0.5f, 0.5f);
                                 if (std::abs(fxc) > 1e-4f || std::abs(fyc) > 1e-4f)
                                 {
-                                        for (int sy = 0; sy < cellSize; sy++)
+                                        for (int sy = 0; sy < cs; sy++)
                                         {
-                                                for (int sx = 0; sx < cellSize; sx++)
+                                                for (int sx = 0; sx < cs; sx++)
                                                 {
                                                         int px = std::min(px0 + sx, XRES - 1);
                                                         int py = std::min(py0 + sy, YRES - 1);
@@ -1246,9 +1295,9 @@ void EMField::ApplyFieldForces(int substeps)
                                 float heat = jzc * jzc * EM_JOULE_HEAT / float(substeps);
                                 if (heat >= 0.02f)
                                 {
-                                        for (int sy = 0; sy < cellSize; sy++)
+                                        for (int sy = 0; sy < cs; sy++)
                                         {
-                                                for (int sx = 0; sx < cellSize; sx++)
+                                                for (int sx = 0; sx < cs; sx++)
                                                 {
                                                         int px = std::min(px0 + sx, XRES - 1);
                                                         int py = std::min(py0 + sy, YRES - 1);
@@ -1448,6 +1497,90 @@ void EMField::PmlStepB()
         }
 }
 
+// PERF (task 8 v3): once per frame, measure the wave activity in the PML band
+// plus an interior guard strip. While everything is below EM_PML_QUIET the
+// band passes are skipped for the whole frame - numerically exact, see the
+// EMField.h comment. NaN/Inf states compare false against the threshold and
+// therefore count as active, so the gate never hides a poisoned band from the
+// clamp pass.
+void EMField::ScanPmlActivity()
+{
+        if (boundaryMode != EMBND_OPEN || pmlUy.empty())
+        {
+                pmlQuiet = false;
+                return;
+        }
+        // guard strip: interior cells within `guard` cells of the band
+        // interface. 8 cells is deeper than the max per-frame wave travel
+        // (16 sub-steps * taddEff/2 = 4 cells at cs=1, less at any other
+        // resolution/speed), so a wave heading for the band always trips the
+        // gate at least one frame before it can touch the interface.
+        const int guard = 8;
+        const int gx1 = std::min(padL + guard, gw);
+        const int gx2 = std::max(gw - padL - guard, 0);
+        const int gy1 = std::min(padT + guard, gh);
+        const int gy2 = std::max(gh - padT - guard, 0);
+        bool quiet = true;
+        auto probe = [&](int gi)
+        {
+                const auto &oe = cells[gi];
+                // NaN is never <= threshold, so poisoned cells read as active
+                if (!(std::abs(oe.az) <= double(EM_PML_QUIET)) ||
+                    !(std::abs(oe.dazdt) <= double(EM_PML_QUIET)) ||
+                    !(std::abs(pmlUy[gi]) <= EM_PML_QUIET) ||
+                    !(std::abs(pmlWy[gi]) <= EM_PML_QUIET))
+                {
+                        quiet = false;
+                }
+        };
+        // left / right band + guard strips, full height
+        for (int j = 0; j < gh && quiet; j++)
+        {
+                for (int i = 0; i < gx1; i++)
+                {
+                        probe(i + j * gw);
+                        if (!quiet)
+                        {
+                                pmlQuiet = false;
+                                return;
+                        }
+                }
+                for (int i = gx2; i < gw; i++)
+                {
+                        probe(i + j * gw);
+                        if (!quiet)
+                        {
+                                pmlQuiet = false;
+                                return;
+                        }
+                }
+        }
+        // top / bottom band + guard strips, middle columns
+        for (int i = gx1; i < gx2 && quiet; i++)
+        {
+                for (int j = 0; j < gy1; j++)
+                {
+                        probe(i + j * gw);
+                        if (!quiet)
+                        {
+                                pmlQuiet = false;
+                                return;
+                        }
+                }
+                for (int j = gy2; j < gh; j++)
+                {
+                        probe(i + j * gw);
+                        if (!quiet)
+                        {
+                                pmlQuiet = false;
+                                return;
+                        }
+                }
+        }
+        pmlQuiet = quiet;
+        EMF_DBG("EMField: PML activity gate %s\n", pmlQuiet ? "quiet (band passes skipped)" : "active");
+}
+
 void EMField::Update()
 {
         if (!enabled)
@@ -1479,6 +1612,12 @@ void EMField::Update()
         // band cells are integrated by the split-field PML (PmlStepA/B), not by
         // the interior wave update
         bool outflow = boundaryMode == EMBND_OPEN;
+        // PERF (task 8 v3): skip the band passes entirely while the band and
+        // its guard strip are quiet; see ScanPmlActivity()
+        if (outflow)
+        {
+                ScanPmlActivity();
+        }
         // perf: the wave loops visit the interior rectangle ONLY - the band is
         // handled by the dedicated PML passes, so no per-cell outflow branch is
         // needed inside the hot loop (bit-exact, the branch used to skip
@@ -1558,7 +1697,8 @@ void EMField::Update()
                 // Must run BETWEEN the interior dazdt and az sweeps: the band
                 // cells then read their neighbours' u^n values, exactly like the
                 // interior stencil does, and the leapfrog stays centred.
-                if (outflow)
+                // Gated by the activity scan while the band is quiet (v3).
+                if (outflow && !pmlQuiet)
                 {
                         PmlStepA();
                 }
@@ -1587,8 +1727,8 @@ void EMField::Update()
                 // default frequency, ~5e-6 at f=5, vs ~0.01..0.19 for the old
                 // advective outflow layer). No sweep-order constraints: the
                 // velocity pass only reads az, this pass only touches own-cell
-                // state.
-                if (outflow)
+                // state. Gated by the activity scan while the band is quiet (v3).
+                if (outflow && !pmlQuiet)
                 {
                         PmlStepB();
                 }
@@ -1636,18 +1776,48 @@ void EMField::Update()
                 // NOTE: double comparisons, exactly like the clamp pass below -
                 // a float narrowing here could miss cells in the last ULP below
                 // the soft limit and change the wave state
+                // PERF: the band+guard cells were just probed by ScanPmlActivity
+                // (quiet => finite and below 1e-9, nothing to clamp), so the
+                // fast max-scan can stay inside the domain rectangle on a quiet
+                // OPEN frame; the full grid is scanned whenever the band is active
                 double maxAz = 0, maxDazdt = 0;
                 bool poisoned = false;
-                for (int gi = 0; gi < gw * gh; gi++)
+                int scanN = (boundaryMode == EMBND_OPEN && pmlQuiet) ? padL + visW : gw * gh;
+                if (boundaryMode == EMBND_OPEN && pmlQuiet)
                 {
-                        const auto &cell = cells[gi];
-                        if (!std::isfinite(cell.az) || !std::isfinite(cell.dazdt))
+                        for (int y = padT; y < padT + visH; y++)
                         {
-                                poisoned = true;
-                                break;
+                                int gi = padL + y * gw;
+                                for (int x = 0; x < visW; x++, gi++)
+                                {
+                                        const auto &cell = cells[gi];
+                                        if (!std::isfinite(cell.az) || !std::isfinite(cell.dazdt))
+                                        {
+                                                poisoned = true;
+                                                break;
+                                        }
+                                        maxAz = std::max(maxAz, std::abs(cell.az));
+                                        maxDazdt = std::max(maxDazdt, std::abs(cell.dazdt));
+                                }
+                                if (poisoned)
+                                {
+                                        break;
+                                }
                         }
-                        maxAz = std::max(maxAz, std::abs(cell.az));
-                        maxDazdt = std::max(maxDazdt, std::abs(cell.dazdt));
+                }
+                else
+                {
+                        for (int gi = 0; gi < scanN; gi++)
+                        {
+                                const auto &cell = cells[gi];
+                                if (!std::isfinite(cell.az) || !std::isfinite(cell.dazdt))
+                                {
+                                        poisoned = true;
+                                        break;
+                                }
+                                maxAz = std::max(maxAz, std::abs(cell.az));
+                                maxDazdt = std::max(maxDazdt, std::abs(cell.dazdt));
+                        }
                 }
                 if (poisoned || maxAz > double(EM_SOFT_LIMIT) || maxDazdt > double(EM_SOFT_LIMIT))
                 {
@@ -1857,11 +2027,15 @@ float EMField::EffectiveProperty(int property, int gi) const
                 return float(cell.medium);
         case EMADJP_MAG_DIR:
         {
-                // current direction as a fraction of 2pi; stored override wins
-                if (cell.ovMask & EM_OV_MAGDIR)
-                {
-                        return cell.ovDir;
-                }
+                // EMADJ fix: ALWAYS derive the current direction from the synced
+                // magnetization (mx,my), never from the raw ovDir override. The
+                // override is folded into mx/my by every SyncMaterials pass, so
+                // the angle below already includes it - ADD/SUB accumulate once
+                // per 0.2s stroke event like every other property. Reading the
+                // raw override instead made the brush's per-pixel multi-hits
+                // (one EM cell is hit cellSize^2 times per stroke) rotate the
+                // magnet value*hits degrees within a SINGLE stroke - the
+                // "加法模式无法连续增加" report for the direction property.
                 if (cell.mx == 0 && cell.my == 0)
                 {
                         return 0;
@@ -1886,6 +2060,16 @@ bool EMField::ApplyEMProperty(int property, int applyMode, int gi, float value)
 {
         auto &cell = cells[gi];
         float eff = EffectiveProperty(property, gi);
+        if (property == EMADJP_MAG_DIR)
+        {
+                // EMADJ fix: EffectiveProperty returns the direction as a 0..1
+                // fraction of 2pi while the tool passes DEGREES. Adding degrees
+                // straight onto the fraction made ADD/SUB rotate by value/360
+                // degrees per application (i.e. practically nothing) - convert
+                // the current direction to degrees first so all three modes
+                // operate in the same unit.
+                eff *= 360.0f;
+        }
         float target = value;
         if (applyMode == EMADJA_ADD)
         {
@@ -1901,7 +2085,10 @@ bool EMField::ApplyEMProperty(int property, int applyMode, int gi, float value)
                 if (cell.conductivity <= 0)
                         return false;
                 cell.ovMask |= EM_OV_CONDUCT;
-                cell.ovConduct = std::clamp(target, 0.0f, 1.0f);
+                // lower clamp matches the SyncMaterials application clamp
+                // (0.01, the applet's adjustBar minimum) so ADD/SUB cannot get
+                // stuck between two different floors
+                cell.ovConduct = std::clamp(target, 0.01f, 1.0f);
                 return true;
         case EMADJP_PERM:
                 if (cell.perm <= 1)
@@ -1938,7 +2125,9 @@ bool EMField::ApplyEMProperty(int property, int applyMode, int gi, float value)
                 if (!(cell.perm > 1 || cell.mx != 0 || cell.my != 0))
                         return false;
                 cell.ovMask |= EM_OV_MAGSTR;
-                cell.ovMag = std::clamp(target, 0.0f, 2.0f);
+                // lower clamp matches the SyncMaterials application clamp so
+                // subtracting past the floor cannot oscillate between 0 and .01
+                cell.ovMag = std::clamp(target, 0.01f, 2.0f);
                 return true;
         }
         }

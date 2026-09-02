@@ -13,6 +13,7 @@
 #include "simulation/Simulation.h"
 #include <cmath>
 #include <cstdlib>
+#include <chrono>
 #include <iostream>
 
 // EM field self test, a debug block (see the EMFIELD_DEBUG guard in
@@ -29,6 +30,58 @@ namespace
         float scTestY0 = 0, scControlY0 = 0;
         double lambdaPxSmall = 0;
         int emtxCellGi = 0;
+
+        // --- EMADJ continuous add/subtract test state (frames 165..236) ---
+        // Reproduces the tool-level 0.2s repeat throttle of
+        // EMAdjustTool::ApplyBrush (first application immediate, then every 12
+        // frames while held) around the REAL per-frame game loop, so the
+        // accumulation runs through ApplyEMProperty -> SyncMaterials exactly
+        // like in-game. One job per property/material cell rect.
+        struct EmAdjJob
+        {
+                int property;
+                int mode;
+                float value;
+                int x0, y0, x1, y1; // particle rect of the test material
+                const char *what;
+        };
+        const EmAdjJob emAdjJobs[] = {
+                { EMADJP_CONDUCT, EMADJA_ADD, 0.07f, 120, 360, 136, 372, "conduct ADD on a fair conductor" },
+                { EMADJP_CONDUCT, EMADJA_ADD, 0.07f, 200, 360, 216, 372, "conduct ADD on a ferromagnetic conductor" },
+                { EMADJP_PERM,    EMADJA_ADD, 0.50f, 200, 360, 216, 372, "perm ADD on a ferromagnet" },
+                { EMADJP_CONDUCT, EMADJA_SUB, 0.07f, 280, 360, 296, 372, "conduct SUB on a perfect conductor" },
+                { EMADJP_MEDIUM,  EMADJA_SUB, 10.0f, 360, 360, 376, 372, "medium SUB on a dielectric" },
+                { EMADJP_J,       EMADJA_ADD, 0.10f, 440, 360, 456, 372, "current ADD on a current source" },
+                { EMADJP_MAG_DIR, EMADJA_ADD, 90.0f, 520, 360, 536, 372, "mag direction ADD on a magnet" },
+                { EMADJP_MAG_STR, EMADJA_ADD, 0.10f, 520, 360, 536, 372, "mag strength ADD on a magnet" },
+        };
+        int emAdjRepeatCounter = 0;
+        bool emAdjStrokeActive = false;
+
+        void EmAdjStrokeTick(EMField *emf)
+        {
+                // verbatim replica of the EMAdjustTool::ApplyBrush add/subtract
+                // branch: apply the whole brush, then wait 12 frames
+                if (!emAdjStrokeActive || emAdjRepeatCounter <= 0)
+                {
+                        for (const auto &job : emAdjJobs)
+                        {
+                                for (int y = job.y0; y < job.y1; ++y)
+                                {
+                                        for (int x = job.x0; x < job.x1; ++x)
+                                        {
+                                                emf->ApplyEMProperty(job.property, job.mode, emf->CellIndex(x, y), job.value);
+                                        }
+                                }
+                        }
+                        emAdjStrokeActive = true;
+                        emAdjRepeatCounter = 12;
+                }
+                else
+                {
+                        emAdjRepeatCounter--;
+                }
+        }
 
         void Check(bool cond, const char *what)
         {
@@ -131,6 +184,13 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 // safety net: never hang forever
                 std::cerr << "[EMSELFTEST] FAIL: timed out" << std::endl;
                 std::exit(1);
+        }
+        // EMADJ continuous add/subtract stroke (frames 166..225): runs BEFORE
+        // the sim tick of every held frame, exactly like the real
+        // input-apply -> simulate order of the main loop
+        if (frame >= 166 && frame <= 225)
+        {
+                EmAdjStrokeTick(gameModel.GetSimulation()->GetEMField());
         }
         switch (frame)
         {
@@ -400,6 +460,89 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 gameModel.SetEMSpeed(1);
                 break;
         }
+        case 160:
+        {
+                // --- EMADJ continuous add/subtract test (frames 166..236) ---
+                // one block of each material the adjust tool works on; the
+                // stroke applies to all of them simultaneously with the tool's
+                // 0.2s repeat cadence
+                auto *sim = gameModel.GetSimulation();
+                for (int y = 360; y < 372; ++y)
+                {
+                        for (int x = 120; x < 136; ++x) sim->create_part(-1, x, y, PT_EMFC); // fair conductor, cond .5
+                        for (int x = 200; x < 216; ++x) sim->create_part(-1, x, y, PT_EMFM); // ferromagnetic conductor, perm 5 cond .5
+                        for (int x = 280; x < 296; ++x) sim->create_part(-1, x, y, PT_EMPC); // perfect conductor, cond 1
+                        for (int x = 360; x < 376; ++x) sim->create_part(-1, x, y, PT_EMDE); // dielectric, medium 191
+                        for (int x = 440; x < 456; ++x) sim->create_part(-1, x, y, PT_EMJP); // +1 current source
+                        for (int x = 520; x < 536; ++x) sim->create_part(-1, x, y, PT_EMMGR); // magnet pointing right
+                }
+                emAdjRepeatCounter = 0;
+                emAdjStrokeActive = false;
+                break;
+        }
+        case 226:
+        {
+                // 60 held frames with the 12-frame repeat -> 5 applications
+                // (frames 166, 178, 190, 202, 214); every job must have moved
+                // its property step by step, not just once ("加法模式无法连续
+                // 增加" regression)
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                {
+                        auto &c = emf->cells[emf->CellIndex(128, 366)];
+                        Check(std::abs(c.conductivity - 0.85f) < 0.01f, "EMADJ add mode: 5x +0.07 on a fair conductor = 0.85");
+                }
+                {
+                        auto &c = emf->cells[emf->CellIndex(208, 366)];
+                        // the old else-if chain dropped the conduct override on
+                        // every ferromagnet, so ADD could never raise it
+                        Check(std::abs(c.conductivity - 0.85f) < 0.01f, "EMADJ add mode: conductivity rises continuously on a ferromagnetic conductor");
+                        Check(std::abs(c.perm - 7.5f) < 0.05f, "EMADJ add mode: 5x +0.5 on a ferromagnet = 7.5");
+                }
+                {
+                        auto &c = emf->cells[emf->CellIndex(288, 366)];
+                        Check(std::abs(c.conductivity - 0.65f) < 0.01f, "EMADJ subtract mode: 5x -0.07 on a perfect conductor = 0.65");
+                }
+                {
+                        auto &c = emf->cells[emf->CellIndex(368, 366)];
+                        Check(c.medium == 141, "EMADJ subtract mode: 5x -10 on a dielectric = 141");
+                }
+                {
+                        auto &c = emf->cells[emf->CellIndex(448, 366)];
+                        Check(std::abs(float(c.jzext) - 1.5f) < 0.01f, "EMADJ add mode: 5x +0.1 on a current source = 1.5");
+                }
+                {
+                        // 5x +90deg = +450deg = +90deg after wrap; EMMGR starts
+                        // at mx=1 (angle 0), 90deg means mx=0, my=-|m|; the
+                        // strength job raised |m| to 1.5 in the same stroke
+                        auto &c = emf->cells[emf->CellIndex(528, 366)];
+                        std::cout << "[EMSELFTEST] info: magnet cell mx=" << c.mx << " my=" << c.my
+                                  << " ovDir=" << c.ovDir << " ovMask=" << int(c.ovMask)
+                                  << " perm=" << c.perm << " cond=" << c.conductivity << std::endl;
+                        Check(std::abs(c.mx) < 0.02f && std::abs(c.my + 1.5f) < 0.02f,
+                                "EMADJ add mode: 5x +90deg rotates the magnet direction step by step");
+                        Check(std::abs(std::sqrt(c.mx * c.mx + c.my * c.my) - 1.5f) < 0.02f,
+                                "EMADJ add mode: 5x +0.1 magnet strength = 1.5, direction kept");
+                }
+                break;
+        }
+        case 236:
+        {
+                // remove the test materials again so they cannot pollute the
+                // pulse / boundary / soak measurements below
+                auto *sim = gameModel.GetSimulation();
+                for (int i = 0; i < sim->parts.active; ++i)
+                {
+                        int t = sim->parts.data[i].type;
+                        if ((t == PT_EMFC || t == PT_EMFM || t == PT_EMPC ||
+                                t == PT_EMDE || t == PT_EMJP || t == PT_EMMGR) &&
+                                sim->parts.data[i].y >= 350)
+                        {
+                                sim->kill_part(i);
+                        }
+                }
+                break;
+        }
         case 2000:
         {
                 auto *sim = gameModel.GetSimulation();
@@ -495,11 +638,115 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                         "OPEN boundary: invisible absorber band outside the screen");
                 break;
         }
+        case 775:
+        {
+                // the freshly reallocated field only carries the 1e-10 vacuum
+                // seed: the PML activity gate must rate the band quiet and skip
+                // its passes (this is what makes OPEN as cheap as CLOSED)
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                Check(emf->pmlQuiet,
+                        "PML activity gate: resting band is quiet (band passes skipped)");
+                break;
+        }
+        case 780:
+        {
+                // debug benchmark: per-frame EM cost of the OPEN mode (quiet
+                // gate, the common case) vs CLOSED vs OPEN with a wave forced
+                // into the band, same grid resolution; information only
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                auto bench = [emf](const char *name) {
+                        for (int f = 0; f < 30; f++) emf->Update(); // warmup
+                        auto t0 = std::chrono::steady_clock::now();
+                        for (int f = 0; f < 300; f++)
+                        {
+                                emf->Update();
+                        }
+                        auto t1 = std::chrono::steady_clock::now();
+                        double us = std::chrono::duration<double, std::micro>(t1 - t0).count() / 300.0;
+                        std::cout << "[EMSELFTEST] bench: " << name << " grid " << emf->gw << "x" << emf->gh
+                                  << " pad " << emf->padL << " -> " << us << " us/frame" << std::endl;
+                };
+                bench("OPEN (quiet band, gate skipping)");
+                gameModel.SetEMBoundaryMode(EMBND_CLOSED);
+                bench("CLOSED (hard wall)             ");
+                gameModel.SetEMBoundaryMode(EMBND_PERIODIC);
+                bench("PERIODIC (ghost ring)          ");
+                gameModel.SetEMBoundaryMode(EMBND_OPEN);
+                // force the gate active so the PML passes actually run: put a
+                // small wave in the guard strip
+                for (int y = emf->padT + 2; y < emf->gh - emf->padT - 2; y += 3)
+                {
+                        emf->cells[emf->padL + 4 + y * emf->gw].az = 0.5;
+                }
+                emf->ScanPmlActivity();
+                bench("OPEN (wave at the edge, PML on)");
+                // the benchmark left wave energy in the field - reallocate the
+                // grid (CLOSED -> OPEN switch) so the pulse tests below start
+                // from a clean vacuum state
+                gameModel.SetEMBoundaryMode(EMBND_CLOSED);
+                gameModel.SetEMBoundaryMode(EMBND_OPEN);
+                break;
+        }
+        case 985:
+        {
+                // gate timing probe: a tiny pulse at the exact canvas centre is
+                // dozens of cells away from every guard strip, so the gate must
+                // still rate the band quiet (the main pulse below overlaps the
+                // top guard strip by design of InjectPulse's row band and trips
+                // the gate immediately)
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                int gi = emf->CellIndex(XRES / 2, YRES / 2);
+                emf->cells[gi].dazdt = 1.0;
+                break;
+        }
+        case 995:
+        {
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                Check(emf->pmlQuiet,
+                        "PML activity gate: mid-canvas wave does not trip the band");
+                break;
+        }
         case 1000:
         {
                 auto *sim = gameModel.GetSimulation();
                 auto *emf = sim->GetEMField();
                 openE0 = InjectPulse(*emf, emf->visW / 2);
+                break;
+        }
+        case 1400:
+        {
+                // 400 frames after injection the pulse has crossed the visible
+                // canvas (0.25 cells/frame at cs=4, speed 2) and entered the
+                // band: the gate must have woken the PML up well before that
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                // TEMP DIAG
+                double guardMax = 0, bandMax = 0, visMax = 0;
+                int px=0, py=0; double pk=0;
+                for (int j = 0; j < emf->gh; ++j)
+                {
+                        for (int i = 0; i < emf->gw; ++i)
+                        {
+                                int gi = i + j * emf->gw;
+                                double v = std::max(std::abs(emf->cells[gi].az), std::abs(emf->cells[gi].dazdt));
+                                bool inBand = i < emf->padL || i >= emf->gw - emf->padL || j < emf->padT || j >= emf->gh - emf->padT;
+                                bool inGuard = (i >= emf->padL && i < emf->padL + 8) || (i >= emf->gw - emf->padL - 8 && i < emf->gw - emf->padL) ||
+                                               (j >= emf->padT && j < emf->padT + 8) || (j >= emf->gh - emf->padT - 8 && j < emf->gh - emf->padT);
+                                if (inBand) bandMax = std::max(bandMax, v);
+                                else if (inGuard) guardMax = std::max(guardMax, v);
+                                else visMax = std::max(visMax, v);
+                                if (v > pk) { pk = v; px = i; py = j; }
+                        }
+                }
+                std::cout << "[EMSELFTEST] info: gate=" << emf->pmlQuiet << " pad=" << emf->padL
+                          << " gw=" << emf->gw << " guardMax=" << guardMax << " bandMax=" << bandMax
+                          << " visMax=" << visMax << " peak=" << px << "," << py << " pk=" << pk << std::endl;
+                Check(!emf->pmlQuiet,
+                        "PML activity gate: wave reaching the edge wakes the band up");
                 break;
         }
         case 1500:
@@ -585,18 +832,27 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 gameModel.SetEMRegionScale(1);
                 Check(emf->visW == XRES / emf->cellSize,
                         "region scale 1 restores the visible canvas as the domain");
-                // --- 0.5x: the domain shrinks to the central half of the canvas ---
+                // --- 0.5x: the domain is HALF the canvas per axis, rendered
+                // magnified 2x so the field still covers the full screen
+                // (0.5x fullscreen fix - the space is half, not the display)
                 gameModel.SetEMRegionScale(0.5f);
                 Check(emf->visW == XRES / 2 / emf->cellSize && emf->visH == YRES / 2 / emf->cellSize,
-                        "region scale 0.5 shrinks the domain to the central quarter of the canvas");
-                Check(emf->renderOffX < 0 && emf->renderOffY < 0,
-                        "region scale 0.5 centres the smaller domain on the canvas (negative render offset)");
+                        "region scale 0.5 shrinks the simulated space to half the canvas extent");
+                Check(emf->renderScale == 2 &&
+                      emf->renderW == XRES / (emf->cellSize * 2) &&
+                      emf->renderH == YRES / (emf->cellSize * 2),
+                        "region scale 0.5 renders the half domain magnified 2x (full-screen field)");
+                Check(emf->renderOffX == emf->padL && emf->renderOffY == emf->padT,
+                        "region scale 0.5 maps the whole domain onto the whole canvas");
                 Check(emf->CellIndex(0, 0) == emf->padL + emf->padT * emf->gw,
-                        "region scale 0.5: off-domain pixels clamp onto the domain edge cell");
-                Check(!emf->PixelInDomain(2, 2) && emf->PixelInDomain(XRES / 2, YRES / 2),
-                        "region scale 0.5: PixelInDomain splits the canvas correctly");
+                        "region scale 0.5: canvas corner maps onto the domain corner cell");
+                Check(emf->CellIndex(XRES - 1, YRES - 1) ==
+                      (emf->padL + emf->visW - 1) + (emf->padT + emf->visH - 1) * emf->gw,
+                        "region scale 0.5: canvas maps onto every domain cell (zoomed 2x)");
+                Check(emf->PixelInDomain(0, 0) && emf->PixelInDomain(XRES - 1, YRES - 1),
+                        "region scale 0.5: the full screen carries the magnified field");
                 gameModel.SetEMRegionScale(1);
-                Check(emf->visW == XRES / emf->cellSize,
+                Check(emf->visW == XRES / emf->cellSize && emf->renderScale == 1,
                         "region scale 1 restores again after 0.5x");
                 break;
         }
@@ -623,8 +879,8 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 Check(std::isfinite(e) && e < 1e5,
                         "1px EM grid stays bounded over 60 frames");
                 gameModel.SetEMBoundaryMode(EMBND_OPEN);
-                Check(emf->padL == EM_PAD_MAX_CELLS && emf->gw == XRES + 2 * emf->padL,
-                        "1px EM grid + OPEN boundary: capped invisible pad (fixed pixel width)");
+                Check(emf->padL == EM_PAD_PX / emf->cellSize && emf->gw == XRES + 2 * emf->padL,
+                        "1px EM grid + OPEN boundary: fixed 64px pixel-width pad");
                 gameModel.SetEMBoundaryMode(EMBND_OPEN);
                 gameModel.SetEMCellSize(EM_CELL_SIZE_DEFAULT);
                 // every geometry switch above reallocated the field and wiped the
