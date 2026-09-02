@@ -163,9 +163,9 @@ public:
         // pixels, so visW > XRES/cellSize: the cells outside the visible canvas are
         // simulated normally but never rendered, letting waves travel through the
         // invisible padding before reaching the actual boundary.
-        // CLOSED uses no padding (hard wall at domain edge); ABSORB and OPEN pad with
-        // an invisible absorber band; PERIODIC pads by a one cell ghost ring that is
-        // refreshed from the opposite edge each sub-step.
+        // CLOSED uses no padding (hard wall at domain edge); ABSORB and OPEN pad
+        // with an invisible split-field PML band; PERIODIC pads by a one cell
+        // ghost ring that is refreshed from the opposite edge each sub-step.
         int padL = 0, padT = 0;
         int visW = 0, visH = 0; // total simulated grid extent in EM cells (may exceed visible)
         // renderWindowX/Y/W/H: sub-rectangle of the grid that maps onto the visible
@@ -227,6 +227,20 @@ public:
         int filterCount = 0;
         int margin = EM_MARGIN_AT_4; // absorbing edge width in cells
 
+        // --- split-field PML state (task 8, OPEN / ABSORB only) ----------------
+        // The band replaces the wave equation with a damped split system:
+        //   wx = wx*bX + Gx(az) ; wy = wy*bY + Gy(az)   (velocity split)
+        //   ux = ux*bX + wx*tadd^2 ; uy = uy*bY + wy*tadd^2 (damped split
+        //   displacement - damping ux with the SAME profile is what makes the
+        //   layer perfectly matched)
+        //   az = ux + uy ; dazdt = wx + wy
+        // Only the y components are stored: ux = az - uy, wx = dazdt - wy.
+        // pmlBX[i] / pmlBY[j] are the per-sub-step damping factors exp(-sigma),
+        // graded quartically from the interface (1 at the inner edge) to the
+        // profile peak at the outer edge; full-grid float arrays (8 B/cell).
+        std::vector<float> pmlUy, pmlWy;
+        std::vector<float> pmlBX, pmlBY;
+
         // debug counters, only meaningful with EMFIELD_DEBUG; the release build
         // keeps the memory (a few ints) but never reads them
         long long fieldClampHits = 0;
@@ -258,7 +272,8 @@ public:
         void ComputeStaticB();
         void CalcBoundaries();
         void SetDamping();
-        void AdvectOutflowCell(int i, int j, int ox, int oy, double nu, double tadd2); // task 8 outflow band
+        void PmlStepA(); // split-field PML velocity update (band cells, task 8)
+        void PmlStepB(); // split-field PML position update (band cells, task 8)
         void RefreshGhostRing(); // PERIODIC boundary: copy the opposite edge into the ghost ring
         void SetupSources();
         void DoSources(double tadd, bool clear);

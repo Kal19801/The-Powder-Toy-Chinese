@@ -236,6 +236,21 @@ void EMField::ApplyGridGeometry()
         gw = visW + 2 * padL;
         gh = visH + 2 * padT;
         cells.assign(gw * gh, Cell{});
+        // split-field PML arrays (task 8): only the OPEN / ABSORB modes have a
+        // band; the split fields start at zero so ux = az - uy stays consistent
+        // with the applet's 1e-10 seed in az
+        if (boundaryMode == EMBND_OPEN || boundaryMode == EMBND_ABSORB)
+        {
+                pmlUy.assign(gw * gh, 0.0f);
+                pmlWy.assign(gw * gh, 0.0f);
+        }
+        else
+        {
+                pmlUy.clear();
+                pmlUy.shrink_to_fit();
+                pmlWy.clear();
+                pmlWy.shrink_to_fit();
+        }
         // visible canvas is always centred on the simulation domain
         int visCanvasW = XRES / cellSize; // cells of the visible canvas
         int visCanvasH = YRES / cellSize;
@@ -279,6 +294,12 @@ void EMField::Clear()
                 {
                         cell.jz = 0;
                 }
+        }
+        // reset the PML split fields too (ux = az - uy must stay consistent)
+        if (!pmlUy.empty())
+        {
+                std::fill(pmlUy.begin(), pmlUy.end(), 0.0f);
+                std::fill(pmlWy.begin(), pmlWy.end(), 0.0f);
         }
         t = 0;
         forceTimeZero = 0;
@@ -813,30 +834,42 @@ void EMField::SetDamping()
                         cell.damp = .99; // need this to avoid reflections in dielectrics
                 }
         }
+        // --- split-field PML profile (task 8) -----------------------------------
+        // The band cells do not use `damp` (they skip the wave update); what is
+        // built here are their per-sub-step damping factors. The profile is
+        // quartic in the depth into the band: exactly 1 at the inner edge (the
+        // first band row behaves exactly like the interior, so the interface is
+        // seamless) rising to the calibrated peak at the outer edge. The peak
+        // scales as 1/cellSize: sigma_phys * cellSize = const keeps the
+        // attenuation per PIXEL resolution-invariant, matching the task-7 wave
+        // speed/wavelength decoupling.
+        pmlBX.assign(gw, 1.0f);
+        pmlBY.assign(gh, 1.0f);
         if (boundaryMode == EMBND_ABSORB || boundaryMode == EMBND_OPEN)
         {
-                // invisible outflow band: pad cells do not use the wave equation
-                // at all (they are advected outward in Update()); what is stored
-                // here is their per-sub-step damping factor. The profile is
-                // cubic in the depth into the band, so it starts at exactly 1
-                // (no impedance step) at the inner edge and grows toward the
-                // outer edge, bleeding the energy the outflow carries out.
-                float sigmaPeak = (boundaryMode == EMBND_OPEN) ? EM_OPEN_SIGMA : EM_ABSORB_SIGMA;
-                for (int d = 0; d < margin; d++)
+                float sigTau = EM_PML_SIGMA * taddEff / EM_TADD_SUB;
+                int D = std::max(2, padL);
+                for (int x = 0; x < gw; x++)
                 {
-                        // d = 0 is the INNERMOST band cell (adjacent to the
-                        // domain), d = margin-1 the outermost (next to the wall)
-                        float depth = float(d) / float(std::max(1, margin - 1));
-                        double da = std::exp(-double(sigmaPeak) * depth * depth * depth);
-                        for (int x = 0; x < gw; x++)
+                        double d = -1;
+                        if (x < padL) d = double(padL - 1 - x);          // left band, innermost = padL-1
+                        else if (x >= gw - padL) d = double(x - (gw - padL)); // right band
+                        if (d >= 0)
                         {
-                                cells[x + (padT + d) * gw].damp = da;
-                                cells[x + (gh - 1 - padT - d) * gw].damp = da;
+                                double s = sigTau * std::pow(d / double(D - 1), double(EM_PML_POWER));
+                                pmlBX[x] = float(std::exp(-s));
                         }
-                        for (int y = 0; y < gh; y++)
+                }
+                D = std::max(2, padT);
+                for (int y = 0; y < gh; y++)
+                {
+                        double d = -1;
+                        if (y < padT) d = double(padT - 1 - y);
+                        else if (y >= gh - padT) d = double(y - (gh - padT));
+                        if (d >= 0)
                         {
-                                cells[(padL + d) + y * gw].damp = da;
-                                cells[(gw - 1 - padL - d) + y * gw].damp = da;
+                                double s = sigTau * std::pow(d / double(D - 1), double(EM_PML_POWER));
+                                pmlBY[y] = float(std::exp(-s));
                         }
                 }
         }
@@ -1729,18 +1762,96 @@ void EMField::InteropParticles()
         }
 }
 
-// one cell of the outflow band (task 8): shift az one step toward the boundary
-// at the matched wave speed nu, then apply the band's damping factor. (ox, oy)
-// is the outward unit direction; the inner neighbour sits at (i-ox, j-oy).
-// dazdt is kept consistent so nothing in the engine ever sees a stale velocity.
-void EMField::AdvectOutflowCell(int i, int j, int ox, int oy, double nu, double tadd2)
+// one sub-step of the split-field PML band (task 8), VELOCITY pass: runs
+// between the interior dazdt and az sweeps so every band cell reads its
+// neighbours' u^n values. Splits the update into an x and a y component,
+// each damped along its own axis with the graded PML profile:
+//   wx = wx*bX + Gx(az) ; wy = wy*bY + Gy(az) ; dazdt = wx + wy
+// Only the y components are stored: wx = dazdt - wy.
+void EMField::PmlStepA()
 {
-        auto &cell = cells[i + j * gw];
-        double innerAz = cells[(i - ox) + (j - oy) * gw].az;
-        double old = cell.az;
-        double shifted = cell.az - nu * (cell.az - innerAz);
-        cell.az = cell.damp * shifted;
-        cell.dazdt = (cell.az - old) / tadd2;
+        auto stepA = [&](int i, int j)
+        {
+                int gi = i + j * gw;
+                auto &oe = cells[gi];
+                double azc = oe.az;
+                double gx = (cells[gi - 1].az + cells[gi + 1].az - 2 * azc) * 0.25;
+                double gy = (cells[gi - gw].az + cells[gi + gw].az - 2 * azc) * 0.25;
+                float wyOld = pmlWy[gi];
+                float wyNew = float(wyOld * pmlBY[j] + gy);
+                double wxNew = (oe.dazdt - wyOld) * pmlBX[i] + gx;
+                pmlWy[gi] = wyNew;
+                oe.dazdt = wxNew + wyNew;
+        };
+        // left / right bands, full height (they include the four corners)
+        for (int j = 1; j < gh - 1; j++)
+        {
+                for (int i = 1; i < padL; i++)
+                {
+                        stepA(i, j);
+                }
+                for (int i = gw - padL; i < gw - 1; i++)
+                {
+                        stepA(i, j);
+                }
+        }
+        // top / bottom bands, middle columns
+        for (int i = padL; i < gw - padL; i++)
+        {
+                for (int j = 1; j < padT; j++)
+                {
+                        stepA(i, j);
+                }
+                for (int j = gh - padT; j < gh - 1; j++)
+                {
+                        stepA(i, j);
+                }
+        }
+}
+
+// one sub-step of the split-field PML band (task 8), POSITION pass: runs after
+// the interior az sweep. The split displacement is damped with the SAME
+// profile as its velocity (ux,t + sx*ux = wx) - this is what makes the layer
+// perfectly matched (zero interface reflection in the continuum, every
+// frequency and angle):
+//   ux = ux*bX + wx*tadd^2 ; uy = uy*bY + wy*tadd^2 ; az = ux + uy
+void EMField::PmlStepB()
+{
+        double tadd2 = double(taddEff) * double(taddEff);
+        auto stepB = [&](int i, int j)
+        {
+                int gi = i + j * gw;
+                auto &oe = cells[gi];
+                float wyNew = pmlWy[gi];
+                double wxNew = oe.dazdt - wyNew;
+                float uyOld = pmlUy[gi];
+                float uyNew = float(uyOld * pmlBY[j] + wyNew * tadd2);
+                double uxNew = (oe.az - uyOld) * pmlBX[i] + wxNew * tadd2;
+                pmlUy[gi] = uyNew;
+                oe.az = uxNew + uyNew;
+        };
+        for (int j = 1; j < gh - 1; j++)
+        {
+                for (int i = 1; i < padL; i++)
+                {
+                        stepB(i, j);
+                }
+                for (int i = gw - padL; i < gw - 1; i++)
+                {
+                        stepB(i, j);
+                }
+        }
+        for (int i = padL; i < gw - padL; i++)
+        {
+                for (int j = 1; j < padT; j++)
+                {
+                        stepB(i, j);
+                }
+                for (int j = gh - padT; j < gh - 1; j++)
+                {
+                        stepB(i, j);
+                }
+        }
 }
 
 void EMField::Update()
@@ -1774,9 +1885,8 @@ void EMField::Update()
         int substeps = EM_SUBSTEPS[std::clamp(speed, 0, 4)];
         double tadd = taddEff;
         double tadd2 = double(taddEff) * double(taddEff);
-        // outflow band cells are advected, not wave-integrated; nu is the wave
-        // group speed in cells per sub-step, so the band is impedance matched
-        double nu = tadd * 0.5;
+        // band cells are integrated by the split-field PML (PmlStepA/B), not by
+        // the interior wave update
         bool outflow = boundaryMode == EMBND_OPEN || boundaryMode == EMBND_ABSORB;
 
         for (int substep = 0; substep < substeps; substep++)
@@ -1850,6 +1960,15 @@ void EMField::Update()
                         }
                 }
 
+                // --- split-field PML band, velocity pass (task 8) --------------------
+                // Must run BETWEEN the interior dazdt and az sweeps: the band
+                // cells then read their neighbours' u^n values, exactly like the
+                // interior stencil does, and the leapfrog stays centred.
+                if (outflow)
+                {
+                        PmlStepA();
+                }
+
                 // --- second pass: integrate az, and compute induced currents in conductors ---
                 for (int j = 1; j < gh - 1; j++)
                 {
@@ -1870,48 +1989,18 @@ void EMField::Update()
                                 oe.az += oe.dazdt * tadd2;
                         }
                 }
-                // --- outflow band sweep (task 8): one-way advection outward ----
-                // Pad cells shift az toward the boundary at the matched wave
-                // speed nu, then bleed energy through their damp factor. The
-                // matched speed (nu = taddEff/2, the scheme's group velocity)
-                // means a wave entering the band keeps its impedance: measured
-                // |R|^2 ~ 0.01 at the default frequency vs ~0.13 for the old
-                // exponential damping ramp. Sweep order matters: each cell must
-                // read its INNER neighbour's pre-sweep value, so the sweep runs
-                // AWAY from the interior (right band descending, left band
-                // ascending, top band descending, bottom band ascending).
+                // --- split-field PML band, position pass (task 8) --------------------
+                // The split displacement is damped with the same profile as its
+                // velocity, which makes the layer perfectly matched: a wave
+                // crossing into the band keeps its impedance and leaves the
+                // domain without reflecting (measured |R|^2 ~ 1e-11 at the
+                // default frequency, ~5e-6 at f=5, vs ~0.01..0.19 for the old
+                // advective outflow layer). No sweep-order constraints: the
+                // velocity pass only reads az, this pass only touches own-cell
+                // state.
                 if (outflow)
                 {
-                        // vertical bands (left and right), full height (they also
-                        // cover the four corners); the horizontal bands then
-                        // cover what is left between them
-                        for (int j = 1; j < gh - 1; j++)
-                        {
-                                // right band, descending i so the inner neighbour
-                                // az[i-1] still holds its pre-sweep value
-                                for (int i = gw - 2; i >= gw - padL; i--)
-                                {
-                                        AdvectOutflowCell(i, j, +1, 0, nu, tadd2);
-                                }
-                                // left band, ascending i so az[i+1] is pre-sweep
-                                for (int i = 1; i <= padL - 1; i++)
-                                {
-                                        AdvectOutflowCell(i, j, -1, 0, nu, tadd2);
-                                }
-                        }
-                        for (int i = padL; i < gw - padL; i++)
-                        {
-                                // top band, descending j so az[j-1] is pre-sweep
-                                for (int j = gh - 2; j >= gh - padT; j--)
-                                {
-                                        AdvectOutflowCell(i, j, 0, +1, nu, tadd2);
-                                }
-                                // bottom band, ascending j so az[j+1] is pre-sweep
-                                for (int j = 1; j <= padT - 1; j++)
-                                {
-                                        AdvectOutflowCell(i, j, 0, -1, nu, tadd2);
-                                }
-                        }
+                        PmlStepB();
                 }
                 t += EM_TADD_SUB;
 
@@ -1949,8 +2038,9 @@ void EMField::Update()
         //  3. a NaN/Inf guard: one poisoned cell used to be able to spread NaN
         //     through the whole grid permanently; now it is zeroed instead.
         {
-                for (auto &cell : cells)
+                for (int gi = 0; gi < gw * gh; gi++)
                 {
+                        auto &cell = cells[gi];
                         if (!std::isfinite(cell.az) || !std::isfinite(cell.dazdt))
                         {
                                 cell.az = 1e-10;
@@ -1958,6 +2048,12 @@ void EMField::Update()
                                 cell.jz = 0;
                                 cell.jzext = 0;
                                 cell.jmext = 0;
+                                // keep the PML split bookkeeping consistent
+                                if (!pmlUy.empty())
+                                {
+                                        pmlUy[gi] = 0;
+                                        pmlWy[gi] = 0;
+                                }
 #if EMFIELD_DEBUG
                                 fieldClampHits++;
 #endif

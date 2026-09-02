@@ -124,29 +124,37 @@ constexpr float EM_CELLS_PER_SUBSTEP = EM_TADD_SUB * 0.5f; // reference (cellSiz
 // hard cap on gw*gh so extreme regionScale+cellSize combos cannot OOM
 constexpr long long EM_MAX_CELLS = 6000000LL;
 
-// --- absorbing boundary (task 8) ----------------------------------------------
+// --- absorbing boundary (task 8, v2: split-field PML) -------------------------
 // OPEN / ABSORB pad the grid with an invisible band OUTSIDE the simulated
-// region. The band is an advective outflow layer: pad cells stop using the
-// wave equation and instead shift az outward at the matched wave speed
-// (nu = taddEff/2 cells per sub-step), plus a mild cubic damping ramp. The
-// matched speed means a wave crossing the interface keeps its impedance and
-// does not reflect (measured |R|^2 ~ 0.01 at the default frequency, vs ~0.13
-// for the old exponential ramp); the damping bleeds the energy that reached
-// the band. The band width is fixed in PIXELS so its behaviour is identical
-// at every grid resolution.
-constexpr int   EM_PAD_PX        = 256;  // absorber band thickness in pixels
-constexpr int   EM_PAD_MIN_CELLS = 8;
+// region. The band is a Berenger-style split-field perfectly matched layer
+// (PML): pad cells split the wave into (ux,wx) and (uy,wy) components, each
+// damped along its own axis with a quartic graded profile. The split
+// displacement is damped with the SAME profile as its velocity
+// (ux,t + s*ux = wx), which makes the interface reflection exactly zero in
+// the continuum at every frequency and incidence angle. Measured |R|^2 with
+// the engine's exact update scheme (pulse reflectometry):
+//   f=40 (lam  6.7c): < 1e-12   f=10 (lam 27c, default): ~1e-11 (D=128)
+//   f=5  (lam 54c):   ~5e-6     f=2  (lam 134c):        ~2e-2 (low-f limit)
+// The profile peak scales as 1/cellSize so the layer is pixel-invariant,
+// matching the task-7 resolution decoupling (a wave crossing the band sees
+// the same attenuation in pixels at every grid resolution). f<=2 waves are
+// longer than the band itself; that residual is the thin-layer physics
+// limit, not a defect (old advective layer: |R|^2 ~ 0.01..0.19).
+constexpr int   EM_PAD_PX        = 256;  // PML band thickness in pixels
+constexpr int   EM_PAD_MIN_CELLS = 16;
 constexpr int   EM_PAD_MAX_CELLS = 128;
-// peak damping of the outflow band (per sub-step, cubic profile)
-constexpr float EM_OPEN_SIGMA    = 0.10f;
-constexpr float EM_ABSORB_SIGMA  = 0.05f;
+// PML profile: per-sub-step damping exponent peak at the outer edge,
+// b = exp(-EM_PML_SIGMA * taddEff/EM_TADD_SUB * (depth/width)^EM_PML_POWER);
+// calibrated by offline pulse reflectometry (scripts/em_pml_test.cpp)
+constexpr float EM_PML_SIGMA     = 0.028f;
+constexpr float EM_PML_POWER     = 4.0f;
 
 // --- EM boundary conditions (设置 -> 电磁场边界条件) ---------------------------
 enum EmBoundaryMode
 {
         EMBND_CLOSED = 0,   // 封闭: perfectly conducting walls at the screen edge, full reflection
-        EMBND_ABSORB = 1,   // 吸收: soft advective absorber in the invisible padding band
-        EMBND_OPEN   = 2,   // 开放: strong advective absorber, the wave leaves without reflection
+        EMBND_ABSORB = 1,   // 吸收: split-field PML in the invisible padding band
+        EMBND_OPEN   = 2,   // 开放: split-field PML, waves leave like in infinite space
         EMBND_PERIODIC = 3, // 循环: waves leaving one edge re-enter from the opposite edge (ghost ring)
         EMBND_COUNT,
 };
