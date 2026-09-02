@@ -388,10 +388,10 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
                 c->SetEMCellSize(emCellSize->GetOption().second);
         });
         emRegionScale = addDropDown(ByteString("电磁场区域大小").FromUtf8(), {
-                { ByteString("1x (默认,匹配可见画布)").FromUtf8(), 1 },
-                { ByteString("2x (扩展2倍)").FromUtf8(), 2 },
-                { ByteString("4x (扩展4倍)").FromUtf8(), 4 },
-                { ByteString("8x (扩展8倍)").FromUtf8(), 8 },
+                { ByteString("1x").FromUtf8(), 1 },
+                { ByteString("2x").FromUtf8(), 2 },
+                { ByteString("4x").FromUtf8(), 4 },
+                { ByteString("8x").FromUtf8(), 8 },
         }, [this] {
                 c->SetEMRegionScale(emRegionScale->GetOption().second);
         });

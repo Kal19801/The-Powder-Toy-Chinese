@@ -7,13 +7,12 @@
 // EMWave2 jz mechanism extended from static sources to moving charges.
 //
 // Task 2: this element used to be called "real electron"; it is now presented
-// to the user as the negative charge (负电荷). The physics is unchanged
-// (charge -1, unit mass, very nimble - it accelerates easily because F/m is
-// 1836x larger than for the positive charge), but the motion parameters are
-// identical to vanilla ELEC (AirLoss=1, Loss=1, Collision=-0.99) and the
-// create() function gives the particle a random initial velocity like vanilla
-// ELEC. The Update function is the explicit motion update requested by the
-// task (see RPRO.cpp for the full rationale).
+// to the user as the negative charge (负电荷). The motion parameters are
+// identical to vanilla ELEC (AirLoss=1, Loss=1, Collision=-0.99), the create()
+// function gives the particle a random initial velocity like vanilla ELEC, and
+// both charges share the electron's field-response inertia, so the ONLY
+// difference from the positive charge is the sign of the charge. See RPRO.cpp
+// for the full rationale.
 // Velocity is strictly clamped to the field propagation speed (CFL), so no
 // current is ever deposited outside the light cone of the field.
 
@@ -23,7 +22,7 @@ static void create(ELEMENT_CREATE_FUNC_ARGS);
 void Element::Element_RELC()
 {
         Identifier = "DEFAULT_PT_RELC";
-        Name = "负电荷"; // task 2: real electron -> negative charge
+        Name = "RELC"; // task 2: real electron -> negative charge
         Colour = 0x80FFFF_rgb;
         MenuVisible = 1;
         MenuSection = SC_REAL;
@@ -48,7 +47,7 @@ void Element::Element_RELC()
         Weight = -1;
 
         HeatConduct = 251;
-        Description = ByteString("负电荷,带负电的载流子(质量极小,极易加速),受电磁场驱动并辐射电磁波,放出来会动").FromUtf8();
+        Description = ByteString("负电荷,带负电的载流子,与正电荷相遇后湮灭").FromUtf8();
 
         Properties = TYPE_ENERGY;
 

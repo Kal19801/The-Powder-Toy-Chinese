@@ -46,7 +46,7 @@ void Element::Element_EMDM()
         HeatConduct = 251;
         Description = ByteString("抗磁体,磁导率=0.5/电导率=0.5,排斥磁感线(EMWave2 抗磁体)").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;
@@ -54,8 +54,10 @@ void Element::Element_EMDM()
         HighPressureTransition = NT;
         LowTemperature = ITL;
         LowTemperatureTransition = NT;
-        HighTemperature = ITH;
-        HighTemperatureTransition = NT;
+        // task 4: high melting point + red-hot glow approaching it, exactly
+        // like vanilla FE (1811 K) / TTAN (1941 K); melts back to itself
+        HighTemperature = 1941.0f;
+        HighTemperatureTransition = PT_LAVA; //@ EMDM -> LAVA(EMDM)
 
         Create = &create;
 }

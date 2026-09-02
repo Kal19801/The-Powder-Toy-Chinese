@@ -4,6 +4,7 @@
 #include "ElementDefs.h"
 #include "common/tpt-rand.h"
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <cstdlib>
 #include <numbers>
@@ -105,12 +106,15 @@ namespace
                 return false;
         }
 
-        inline float ClampPerm(float perm)
+        inline float ClampPerm(float perm, float permMax)
         {
                 // CFL stability bound of the leapfrog wave update, see
-                // SimulationConfig.h; larger contrasts diverge (this is exactly
-                // the old "ferromagnet self-excitation" divergence)
-                return std::clamp(perm, EM_PERM_MIN, EM_PERM_MAX);
+                // SimulationConfig.h; the bound is on the perm CONTRAST ratio
+                // against the weakest neighbour, and it depends on the wave
+                // timestep (which depends on the cell size). Larger contrasts
+                // diverge (this is exactly the old "ferromagnet
+                // self-excitation" divergence).
+                return std::clamp(perm, EM_PERM_MIN, permMax);
         }
 }
 
@@ -120,7 +124,6 @@ EMField::EMField(Simulation & sim_) :
         SetCellSize(EM_CELL_SIZE_DEFAULT);
         SetRegionScale(EM_REGION_SCALE_DEFAULT);
 }
-
 void EMField::SetCellSize(int newCellSize)
 {
         bool valid = false;
@@ -181,15 +184,18 @@ void EMField::SetBoundaryMode(int newMode)
 // reallocate the field. The simulation domain in pixels is regionScale * (XRES x
 // YRES); the visible canvas is always XRES x YRES centred on the domain.
 // - CLOSED: no padding (hard reflecting wall at the outermost simulated cell)
-// - ABSORB / OPEN: pad by an invisible absorber band whose width is scaled so the
-//   wave is attenuated below visibility before it can reflect off the hard outer
-//   edge. ABSORB and OPEN now share the same geometry (the absorber sits OUTSIDE
-//   the simulation domain in both), they differ only in ramp strength.
+// - ABSORB / OPEN: pad by an invisible advective-outflow absorber band whose
+//   width is fixed in PIXELS (EM_PAD_PX), so the band behaves identically at
+//   every grid resolution; a wave crossing into the band keeps its impedance
+//   and leaves the domain without reflecting (task 8)
 // - PERIODIC: pad by a one cell ghost ring which is refreshed from the opposite
 //   edge every sub-step (true wrap-around without special-casing the wave update).
 // Reallocating resets the wave state, the same trade-off as changing cellSize.
 void EMField::ApplyGridGeometry()
 {
+        // the wave timestep shrinks with the cell size so that the wave keeps
+        // the same pixel speed and pixel wavelength at every resolution (task 7)
+        taddEff = EmWaveTadd(cellSize);
         // total simulated cells (the domain); region > 1 means this extends past
         // the visible canvas in every direction
         visW = std::max(8, (XRES * regionScale) / cellSize);
@@ -202,12 +208,11 @@ void EMField::ApplyGridGeometry()
         case EMBND_OPEN:
         case EMBND_ABSORB:
         {
-                // absorber sits OUTSIDE the simulation domain (invisible padding).
-                // Width scales with cellSize so the absorber is always ~the same
-                // physical thickness in pixels; clamped to keep very fine grids
-                // affordable. With regionScale > 1 the absorber is added on top of
-                // the already-oversized domain, so the visible canvas stays bare.
-                int pad = std::clamp(EM_MARGIN_AT_4 * EM_CELL_SIZE_DEFAULT / cellSize, 4, EM_OPEN_PAD_MAX);
+                // absorber band OUTSIDE the simulation domain (invisible
+                // padding), fixed thickness in pixels. With regionScale > 1 the
+                // band is added on top of the already-oversized domain, so the
+                // visible canvas stays bare.
+                int pad = std::clamp(EM_PAD_PX / cellSize, EM_PAD_MIN_CELLS, EM_PAD_MAX_CELLS);
                 padL = pad;
                 padT = pad;
                 margin = pad;
@@ -219,6 +224,14 @@ void EMField::ApplyGridGeometry()
                 break;
         default: // EMBND_CLOSED: hard reflecting wall at the domain edge
                 break;
+        }
+        // guard against extreme regionScale+cellSize combinations exhausting memory
+        while ((long long)(visW + 2 * padL) * (visH + 2 * padT) > EM_MAX_CELLS && regionScale > 1)
+        {
+                regionScale /= 2;
+                visW = std::max(8, (XRES * regionScale) / cellSize);
+                visH = std::max(8, (YRES * regionScale) / cellSize);
+                EMF_DBG("EMField: region scale reduced to %dx to fit the cell budget\n", regionScale);
         }
         gw = visW + 2 * padL;
         gh = visH + 2 * padT;
@@ -362,6 +375,7 @@ int EMField::CellTypeOf(const Cell &oe)
 void EMField::SyncMaterials()
 {
         emwSources.clear();
+        monoSources.clear();
         for (auto &cell : cells)
         {
                 cell.perm = 1;
@@ -459,7 +473,7 @@ void EMField::SyncMaterials()
                         if (p.temp < EM_SC_TC)
                         {
                                 cell.conductivity = std::max(cell.conductivity, 1.0f);
-                                cell.perm = ClampPerm(0.01f); // Meissner: B expelled
+                                cell.perm = ClampPerm(0.5f, PermMax()); // Meissner: B expelled
                                 cell.heatable = false;
                                 cell.magpowder = (p.type == PT_SCPW); // levitates over magnets
                                 cell.magsolid = (p.type == PT_SCND);  // solid Meissner body, mild push
@@ -472,17 +486,23 @@ void EMField::SyncMaterials()
                         }
                         continue;
                 }
-                // --- Task 3: stationary magnetic monopole carries a static field ---
-                // RMON deposits a constant magnetic current jmext in its cell so a
-                // parked monopole radiates a 1/r B field of the same order as a
-                // painted EMMG magnet (mx/my = +-1). The sign matches the pole
-                // (ctype 0 = N = +1, ctype 1 = S = -1). Moving monopoles also
-                // deposit jmext via DepositRealCharges(); both contributions sum.
+                // --- Task 3: magnetic monopole carries a true static field ------
+                // The monopole's field is computed analytically in
+                // ComputeStaticB() as a radial B = g*K*r̂/r superposed on the
+                // dynamic field (and deliberately kept OUT of the wave
+                // equation: Maxwell is linear, so a static field does not
+                // scatter waves, and a static source must not pump energy into
+                // the wave state). Moving monopoles also deposit a jmext along
+                // their path via DepositRealCharges() - that part radiates,
+                // exactly as a moving magnetic charge should.
                 if (p.type == PT_RMON)
                 {
-                        auto &cell = cells[CellIndex(int(p.x), int(p.y))];
                         float sign = (p.ctype == 1) ? -1.0f : 1.0f;
-                        cell.jmext += double(sign * EM_MONO_STATIC);
+                        // grid coordinates (including the render offset - with an
+                        // outflow boundary the visible canvas sits at renderOffX/Y
+                        // inside the padded grid)
+                        int gi = CellIndex(int(p.x), int(p.y));
+                        monoSources.push_back({ gi % gw, gi / gw, sign });
                         continue;
                 }
                 // --- Task 5: EMAN antenna reads neighbour excitation and sparks ---
@@ -495,18 +515,39 @@ void EMField::SyncMaterials()
                 {
                         continue;
                 }
-                // --- Task 6: EMTX transmitter injects a wave on SPRK ----------
-                // The element is a passive field-material cell while not sparked;
-                // while sparked (life > 0) its update() pushes a per-cell jzext
-                // pulse into the field. The cell state is updated by the element's
-                // own update function, not here.
+                // --- Task 6: EMTX transmitter radiates a burst on SPRK --------
+                // The transmitter is NOT a vanilla conductor: it watches its
+                // 4-neighbourhood from its own update() and starts a burst
+                // (tmp = frames left) when an adjacent conductor is sparked.
+                // Configuration: .ctype = carrier frequency 1..40 (0 = global
+                // setting), .life = amplitude*4 (0 = unit amplitude). Keeping
+                // the config in ctype/life is exactly what the task asks for;
+                // because EMTX never becomes SPRK itself, a spark cycle cannot
+                // clobber the user's values. The emission happens HERE (before
+                // the wave sub-steps) - writing jzext from an element update
+                // would be erased by the next SyncMaterials before the wave
+                // ever sees it.
                 if (p.type == PT_EMTX)
                 {
-                        // The EMTX particle itself participates as a passive cell so
-                        // neighbour EM cells see a slight impedance load; the
-                        // actual wave injection happens in the element's update().
-                        auto &cell = cells[CellIndex(int(p.x), int(p.y))];
-                        cell.perm = ClampPerm(1.0f); // vacuum-like, no disruption
+                        if (p.tmp > 0)
+                        {
+                                // burst envelope: smooth Hann window over the
+                                // remaining burst frames
+                                float total = std::max(1, p.tmp2);
+                                float env = std::sin(float(std::numbers::pi_v<float>) * (1.0f - float(p.tmp) / total));
+                                float freq = frequency;
+                                if (p.ctype >= 1 && p.ctype <= 40)
+                                {
+                                        freq = float(p.ctype);
+                                }
+                                float amp = (p.life > 0) ?
+                                        std::clamp(float(p.life) / 4.0f, 0.05f, EM_JZEXT_MAX) : 1.0f;
+                                auto &cell = cells[CellIndex(int(p.x), int(p.y))];
+                                cell.jzext = double(amp * env) * std::sin(double(freq) * t * EM_FREQ_MULT);
+                                // countdown runs once per frame (SyncMaterials is
+                                // called once per frame from Update())
+                                p.tmp -= 1;
+                        }
                         continue;
                 }
                 // --- Task 10: EMJC current injector block --------------------
@@ -567,7 +608,7 @@ void EMField::SyncMaterials()
                         }
                         if (mat.perm != 1)
                         {
-                                cell.perm = ClampPerm(mat.perm);
+                                cell.perm = ClampPerm(mat.perm, PermMax());
                         }
                         if (mat.medium > cell.medium)
                         {
@@ -583,7 +624,11 @@ void EMField::SyncMaterials()
         // erasing particles never leaves invisible EM leftovers behind.
         for (auto &cell : cells)
         {
-                if (cell.ovMask & EM_OV_JZ && cell.jzext != 0)
+                // task 10: the J override applies wherever a current can flow:
+                // dedicated current-source cells AND conductor cells (exciting a
+                // current inside an EM-zone conductor). Cells that lost their
+                // material get the override wiped below anyway.
+                if (cell.ovMask & EM_OV_JZ && (cell.jzext != 0 || cell.conductivity > 0))
                 {
                         // the override carries the full signed current
                         cell.jzext = double(std::clamp(cell.ovJz, -EM_JZEXT_MAX, EM_JZEXT_MAX));
@@ -592,7 +637,7 @@ void EMField::SyncMaterials()
                 {
                         if (cell.ovMask & EM_OV_PERM)
                         {
-                                cell.perm = ClampPerm(cell.ovPerm);
+                                cell.perm = ClampPerm(cell.ovPerm, PermMax());
                         }
                 }
                 // magnetization overrides apply to ferromagnets AND to painted magnet
@@ -655,6 +700,74 @@ void EMField::SyncMaterials()
         CalcBoundaries();
 }
 
+// --- task 3: static field of placed magnetic monopoles ------------------------
+// A magnetic monopole at rest carries a radial magnetic field
+//     B(r) = g * EM_MONO_FIELD * r_hat / r_cells
+// exactly like the 2D Coulomb field of an electric charge, with |B| = 1 at one
+// cell distance - the same order as the near field of a painted EMMG magnet
+// (mx/my = +-1). The contribution is capped at EM_MONO_FIELD_RADIUS cells with a
+// smooth fade so the per-monopole work stays bounded; beyond that the 1/r field
+// is far below every threshold the simulation uses. The field is REBUILT every
+// frame (monopoles move), superposed into cell.bstatx/bstaty, and deliberately
+// kept OUT of the wave equation: Maxwell's equations are linear, so the static
+// field does not scatter waves, and keeping it out of the dynamic state is what
+// makes it truly static (a wave-equation source would pump energy forever).
+void EMField::ComputeStaticB()
+{
+        if (monoSources.empty())
+        {
+                // fast path: no monopoles, just clear the previous frame's field
+                for (auto &cell : cells)
+                {
+                        if (cell.bstatx != 0 || cell.bstaty != 0)
+                        {
+                                cell.bstatx = 0;
+                                cell.bstaty = 0;
+                        }
+                }
+                return;
+        }
+        for (auto &cell : cells)
+        {
+                cell.bstatx = 0;
+                cell.bstaty = 0;
+        }
+        int R = EM_MONO_FIELD_RADIUS;
+        for (const auto &ms : monoSources)
+        {
+                int x0 = std::max(1, ms.cx - R);
+                int x1 = std::min(gw - 1, ms.cx + R);
+                int y0 = std::max(1, ms.cy - R);
+                int y1 = std::min(gh - 1, ms.cy + R);
+                for (int cy = y0; cy < y1; cy++)
+                {
+                        for (int cx = x0; cx < x1; cx++)
+                        {
+                                float dx = float(cx - ms.cx);
+                                float dy = float(cy - ms.cy);
+                                float r = std::sqrt(dx * dx + dy * dy);
+                                if (r < 0.5f)
+                                {
+                                        continue; // the monopole's own cell: no self-force
+                                }
+                                float b = ms.sign * EM_MONO_FIELD / r;
+                                // smooth fade over the outer 20% of the radius so
+                                // the truncation never creates a visible ring
+                                float fade = 1.0f;
+                                if (r > 0.8f * R)
+                                {
+                                        float s = (r - 0.8f * R) / (0.2f * R);
+                                        fade = 1.0f - s * s;
+                                }
+                                b *= fade;
+                                auto &cell = cells[cx + cy * gw];
+                                cell.bstatx += b * dx / r;
+                                cell.bstaty += b * dy / r;
+                        }
+                }
+        }
+}
+
 void EMField::CalcBoundaries()
 {
         // Mark all cells where the permeability, medium, magnetization or resonance
@@ -702,34 +815,28 @@ void EMField::SetDamping()
         }
         if (boundaryMode == EMBND_ABSORB || boundaryMode == EMBND_OPEN)
         {
-                // exponential absorbing ramp in the invisible padding band; the
-                // ramp starts WEAK at the inner edge (adjacent to the simulation
-                // domain) and grows STRONG toward the outer edge, so the wave
-                // sees a smooth impedance transition instead of a hard step that
-                // would reflect it. The two boundary modes share the geometry
-                // (padding outside the visible canvas); they differ only in ramp
-                // strength - OPEN is the more aggressive absorber, ABSORB is the
-                // softer one for users who want to see the wave gradually fade.
-                float ramp = (boundaryMode == EMBND_OPEN) ? EM_OPEN_RAMP : EM_ABSORB_RAMP;
-                for (int i = 0; i < margin; i++)
+                // invisible outflow band: pad cells do not use the wave equation
+                // at all (they are advected outward in Update()); what is stored
+                // here is their per-sub-step damping factor. The profile is
+                // cubic in the depth into the band, so it starts at exactly 1
+                // (no impedance step) at the inner edge and grows toward the
+                // outer edge, bleeding the energy the outflow carries out.
+                float sigmaPeak = (boundaryMode == EMBND_OPEN) ? EM_OPEN_SIGMA : EM_ABSORB_SIGMA;
+                for (int d = 0; d < margin; d++)
                 {
-                        // i=0 is the outermost cell of the absorber (next to the hard
-                        // wall), i=margin-1 is the innermost (adjacent to the domain).
-                        // The damping factor multiplies dazdt each sub-step, so a
-                        // value close to 1 = weak damping (inner) and a smaller value
-                        // = strong damping (outer). The factor is multiplicative
-                        // across the band, giving total attenuation = product of all
-                        // damp factors = exp(-sum).
-                        double da = std::exp(-(margin - i) * ramp);
+                        // d = 0 is the INNERMOST band cell (adjacent to the
+                        // domain), d = margin-1 the outermost (next to the wall)
+                        float depth = float(d) / float(std::max(1, margin - 1));
+                        double da = std::exp(-double(sigmaPeak) * depth * depth * depth);
                         for (int x = 0; x < gw; x++)
                         {
-                                cells[x + i * gw].damp = da;
-                                cells[x + (gh - 1 - i) * gw].damp = da;
+                                cells[x + (padT + d) * gw].damp = da;
+                                cells[x + (gh - 1 - padT - d) * gw].damp = da;
                         }
                         for (int y = 0; y < gh; y++)
                         {
-                                cells[i + y * gw].damp = da;
-                                cells[(gw - 1 - i) + y * gw].damp = da;
+                                cells[(padL + d) + y * gw].damp = da;
+                                cells[(gw - 1 - padL - d) + y * gw].damp = da;
                         }
                 }
         }
@@ -793,9 +900,11 @@ void EMField::SetupSources()
         if (sourcePlane)
         {
                 // plane sources are drawn between pairs of corner points of the
-                // VISIBLE area, inset by one cell from the innermost usable ring
+                // VISIBLE area, inset by one cell from its edge; the outflow
+                // band lives entirely OUTSIDE the visible canvas, so no
+                // margin-based inset is needed anymore
                 sourceCount *= 2;
-                int inset = (boundaryMode == EMBND_ABSORB) ? margin : 1;
+                int inset = 1;
                 int x2 = padL + visW - inset - 1;
                 int y2 = padT + visH - inset - 1;
                 sources[0] = { padL + inset, padT + inset };
@@ -806,7 +915,7 @@ void EMField::SetupSources()
         else
         {
                 // point sources sit around the centre of the visible canvas
-                int inset = (boundaryMode == EMBND_ABSORB) ? margin : 1;
+                int inset = 1;
                 sources[0] = { padL + visW / 2, padT + inset + 1 };
                 sources[1] = { padL + visW / 2, padT + visH - inset - 2 };
                 sources[2] = { padL + inset + 1, padT + visH / 2 };
@@ -1025,9 +1134,9 @@ void EMField::CollectRealCharges()
                 float q = 0, g = 0, mass = 1;
                 switch (p.type)
                 {
-                case PT_RPRO: q =  1;  mass = EM_PROTON_MASS; break;
-                case PT_RELC: q = -1;  mass = 1;              break;
-                case PT_RMON: g = (p.ctype == 1) ? -1 : 1;    break;
+                case PT_RPRO: q =  1;  break; // task 2: same inertia as ELEC
+                case PT_RELC: q = -1;  break;
+                case PT_RMON: g = (p.ctype == 1) ? -1 : 1; break;
                 default:      continue;
                 }
                 realChargeCount++;
@@ -1114,6 +1223,11 @@ void EMField::InteractParticles(int substep, int substeps)
 {
         auto &parts = sim.parts;
         float vmax = MaxParticleSpeed();
+        // the in-plane coupling gains are normalised so the SAME physical field
+        // produces the same force at every cell size: the wave state's velocity
+        // dazdt scales with 1/taddEff^2 and the per-cell curl with 1/cellSize
+        float velNorm = (taddEff / EM_TADD_SUB) * (taddEff / EM_TADD_SUB);
+        float cellNorm = 1.0f / float(cellSize);
         // forces are integrated per sub-step so that a sub-step of the particle
         // motion always stays inside a sub-step of the field propagation;
         // every real particle in the simulation gets the field forces, while the
@@ -1124,9 +1238,9 @@ void EMField::InteractParticles(int substep, int substeps)
                 float q = 0, g = 0, mass = 1;
                 switch (p.type)
                 {
-                case PT_RPRO: q =  1; mass = EM_PROTON_MASS; break;
-                case PT_RELC: q = -1; mass = 1;              break;
-                case PT_RMON: g = (p.ctype == 1) ? -1 : 1;   break;
+                case PT_RPRO: q =  1; break;
+                case PT_RELC: q = -1; break;
+                case PT_RMON: g = (p.ctype == 1) ? -1 : 1; break;
                 default:      continue;
                 }
                 int gi = CellIndex(int(p.x), int(p.y));
@@ -1136,45 +1250,45 @@ void EMField::InteractParticles(int substep, int substeps)
                 {
                         continue;
                 }
-                auto b2 = [this](int gg) {
-                        double dx = cells[gg - gw].az - cells[gg + gw].az;
-                        double dy = cells[gg + 1].az - cells[gg - 1].az;
-                        return dx * dx + dy * dy;
-                };
+                auto &cell = cells[gi];
                 double fx = 0, fy = 0;
-                // gradient force on electric charges: they are pulled toward
-                // regions of strong field (polarity independent, like the
-                // field-line pressure the applet shows in its force view)
+                // in-plane magnetic field at this cell: B = curl az (per-cell
+                // curl of the dynamic field) plus the static superposed field of
+                // any placed monopoles (task 3)
+                double bx = (cells[gi + gw].az - cells[gi - gw].az) * 0.5 + cell.bstatx;
+                double by = (cells[gi - 1].az - cells[gi + 1].az) * 0.5 + cell.bstaty;
                 if (q != 0)
                 {
-                        double e2l = b2(gi - 1), e2r = b2(gi + 1);
-                        double e2u = b2(gi - gw), e2d = b2(gi + gw);
-                        fx += (e2r - e2l) * 0.5 * EM_GRAD_FORCE;
-                        fy += (e2d - e2u) * 0.5 * EM_GRAD_FORCE;
-                        // --- Lorentz-like force on individual moving charges ----
-                        // In pure 2D TM mode the in-plane B field would give an
-                        // out-of-plane v x B (unmodelled in 2D). We instead apply
-                        // a fictitious in-plane force that treats |B| as if it
-                        // were a perpendicular Bz field. The real 3D Lorentz force
-                        // F = qv x B with v = (vx,vy,0) and B = (0,0,Bz) gives
-                        // F = (q*vy*Bz, -q*vx*Bz, 0). We use |B| of the in-plane
-                        // field as a proxy for Bz so a charge moving through a
-                        // strong B region curves, the way a real charge would in
-                        // a real Bz. Small gain keeps it a perturbation on top of
-                        // the gradient force.
-                        double bx = (cells[gi + gw].az - cells[gi - gw].az) * 0.5;
-                        double by = (cells[gi - 1].az - cells[gi + 1].az) * 0.5;
-                        double bmag = std::sqrt(bx * bx + by * by);
-                        fx += q * double(p.vy) * bmag * EM_LORENTZ_FORCE;
-                        fy -= q * double(p.vx) * bmag * EM_LORENTZ_FORCE;
+                        // --- the REAL Lorentz force available in 2D TM mode ----
+                        // The TM field's electric component is Ez = -d(az)/dt,
+                        // OUT of the plane, so a charge in the plane quivers out
+                        // of plane with vz driven by Ez. That quiver velocity
+                        // crossed with the IN-PLANE B gives a real in-plane
+                        // force F = q vz x B = q vz (By, -Bx) - the genuine
+                        // radiation-pressure coupling of the simulated field
+                        // (the previous implementation instead faked it by
+                        // treating |B| as a perpendicular Bz). vz persists in
+                        // the particle's .tmp (bit-cast) so it survives frames
+                        // and saves; a mild damping stands in for the out-of-
+                        // plane radiation the 2D world cannot carry.
+                        float vz;
+                        std::memcpy(&vz, &p.tmp, sizeof(vz));
+                        if (!std::isfinite(vz))
+                        {
+                                vz = 0;
+                        }
+                        double ez = -double(cells[gi].dazdt) * velNorm; // E_z, physical
+                        vz += float(q * ez * EM_EZ_FORCE);
+                        vz *= (1.0f - EM_VZ_DAMP);
+                        std::memcpy(&p.tmp, &vz, sizeof(vz));
+                        fx += q * double(vz) * by * cellNorm * EM_LORENTZ_FORCE;
+                        fy -= q * double(vz) * bx * cellNorm * EM_LORENTZ_FORCE;
                 }
-                // magnetic monopoles feel the in-plane B field directly: B = curl az
+                // magnetic monopoles feel the in-plane B field directly: F = g B
                 if (g != 0)
                 {
-                        double bx = (cells[gi + gw].az - cells[gi - gw].az) * 0.5;
-                        double by = (cells[gi - 1].az - cells[gi + 1].az) * 0.5;
-                        fx += g * bx * EM_MONOPOLE_FORCE;
-                        fy += g * by * EM_MONOPOLE_FORCE;
+                        fx += g * bx * cellNorm * EM_MONOPOLE_FORCE;
+                        fy += g * by * cellNorm * EM_MONOPOLE_FORCE;
                 }
                 p.vx += float(fx / mass) * EM_TADD_SUB * 4.0f / float(substeps);
                 p.vy += float(fy / mass) * EM_TADD_SUB * 4.0f / float(substeps);
@@ -1251,8 +1365,9 @@ void EMField::InteractParticles(int substep, int substeps)
                                 if (drift != 0)
                                 {
                                         float vdrift = float(drift) * EM_DRIFT_SPEED * cell.conductivity;
-                                        // protons steer more sluggishly than electrons
-                                        float blend = (q > 0) ? 0.35f : 1.0f;
+                                        // task 2: both charges share the electron's
+                                        // kinematics, so the drift blend is the same
+                                        float blend = 1.0f;
                                         float nvx = p.vx * (1 - blend) + tx * vdrift * blend;
                                         float nvy = p.vy * (1 - blend) + ty * vdrift * blend;
                                         p.vx = std::clamp(nvx, -vmax, vmax);
@@ -1292,10 +1407,10 @@ void EMField::InteractParticles(int substep, int substeps)
                                 float f = EM_COULOMB * ra.q * rb.q / (r2 + 0.5f) / r; // f/r * (ddx,ddy)
                                 auto &pa = parts.data[ra.i];
                                 auto &pb = parts.data[rb.i];
-                                pa.vx += f * ddx / ra.mass * EM_TADD_SUB * 4.0f / float(substeps);
-                                pa.vy += f * ddy / ra.mass * EM_TADD_SUB * 4.0f / float(substeps);
-                                pb.vx -= f * ddx / rb.mass * EM_TADD_SUB * 4.0f / float(substeps);
-                                pb.vy -= f * ddy / rb.mass * EM_TADD_SUB * 4.0f / float(substeps);
+                                pa.vx += f * ddx * EM_TADD_SUB * 4.0f / float(substeps);
+                                pa.vy += f * ddy * EM_TADD_SUB * 4.0f / float(substeps);
+                                pb.vx -= f * ddx * EM_TADD_SUB * 4.0f / float(substeps);
+                                pb.vy -= f * ddy * EM_TADD_SUB * 4.0f / float(substeps);
                         }
                 }
         }
@@ -1326,9 +1441,13 @@ void EMField::InteractParticles(int substep, int substeps)
                                 }
                                 if (cell.magpowder || cell.magsolid)
                                 {
+                                        // |B|^2 of dynamic + static (monopole) field:
+                                        // iron filings must respond to a parked
+                                        // monopole exactly like they do to a magnet
                                         auto b2f = [this](int gg) {
-                                                double dx = cells[gg - gw].az - cells[gg + gw].az;
-                                                double dy = cells[gg + 1].az - cells[gg - 1].az;
+                                                const auto &c = cells[gg];
+                                                double dx = cells[gg - gw].az - cells[gg + gw].az + c.bstatx;
+                                                double dy = cells[gg + 1].az - cells[gg - 1].az + c.bstaty;
                                                 return dx * dx + dy * dy;
                                         };
                                         double e2 = b2f(gi);
@@ -1531,19 +1650,20 @@ void EMField::InteropParticles()
                 parts.data[ri].life = 4;
         }
 
-        // c) EMAN antenna: a coupler that bridges the EM field to vanilla SPRK.
-        // For each EMAN particle, look at the EM cells in its 4-neighbourhood
-        // (and its own cell). If any of them has |E|, |B| or |j| above an
-        // "excitation" threshold (i.e. the EM zone is actively being driven),
-        // the antenna fires a vanilla SPRK on every adjacent vanilla conductor
-        // (PROP_CONDUCTS, not already sparked). The threshold scales with the
-        // cellSize so a finer grid (smaller per-cell field magnitudes) still
-        // triggers correctly.
+        // c) EMAN antenna (task 5): a coupler that bridges the EM field to
+        // vanilla SPRK. The EM-zone elements CONNECTED to the antenna ARE its
+        // antenna: EMAN reads the excitation current |jz + jzext| (the induced
+        // current driven by the wave inside those elements) of the 3x3 EM-cell
+        // neighbourhood around itself and compares it against its threshold.
+        // The threshold is .ctype in raw current units (0 = default
+        // EMAN_THRESHOLD_DEFAULT, capped at EMAN_THRESHOLD_MAX); set it with the
+        // PROP tool or by drawing with a value. When the excitation exceeds the
+        // threshold, the antenna fires a vanilla SPRK on every adjacent vanilla
+        // conductor (PROP_CONDUCTS, not already sparked / not in cooldown).
         //
-        // The antenna is the EM -> vanilla direction of "this EM zone is doing
-        // something, push that signal out to the vanilla circuit". Pair it with
-        // an EMTX transmitter (vanilla -> EM) for bidirectional coupling.
-        double exciteThreshold = 0.02 * double(cellSize);
+        // Pair with an EMTX transmitter (vanilla -> EM) for bidirectional
+        // coupling: EMTX radiates the wave, the wave drives currents inside the
+        // EM-zone conductors touching EMAN, EMAN sparks the next circuit.
         for (int i = 0; i < parts.active; ++i)
         {
                 auto &p = parts.data[i];
@@ -1557,7 +1677,13 @@ void EMField::InteropParticles()
                 {
                         continue;
                 }
-                // gather excitation from the 3x3 neighbourhood of EM cells
+                // threshold from .ctype (raw current units)
+                float thr = EMAN_THRESHOLD_DEFAULT;
+                if (p.ctype > 0)
+                {
+                        thr = std::min(float(p.ctype), EMAN_THRESHOLD_MAX);
+                }
+                // gather the excitation current from the 3x3 neighbourhood of EM cells
                 int gi = CellIndex(px, py);
                 int cx = gi % gw;
                 int cy = gi / gw;
@@ -1572,14 +1698,11 @@ void EMField::InteropParticles()
                         {
                                 int ngi = gi + dx + dy * gw;
                                 auto &nc = cells[ngi];
-                                double e = std::abs(nc.dazdt); // |E|
-                                double b = std::sqrt(std::pow(nc.az - cells[ngi - 1].az, 2) +
-                                                     std::pow(nc.az - cells[ngi - gw].az, 2));
                                 double j = std::abs(nc.jz + nc.jzext);
-                                maxExcite = std::max({maxExcite, e, b, j});
+                                maxExcite = std::max(maxExcite, j);
                         }
                 }
-                if (maxExcite < exciteThreshold)
+                if (maxExcite < double(thr))
                 {
                         continue;
                 }
@@ -1606,6 +1729,20 @@ void EMField::InteropParticles()
         }
 }
 
+// one cell of the outflow band (task 8): shift az one step toward the boundary
+// at the matched wave speed nu, then apply the band's damping factor. (ox, oy)
+// is the outward unit direction; the inner neighbour sits at (i-ox, j-oy).
+// dazdt is kept consistent so nothing in the engine ever sees a stale velocity.
+void EMField::AdvectOutflowCell(int i, int j, int ox, int oy, double nu, double tadd2)
+{
+        auto &cell = cells[i + j * gw];
+        double innerAz = cells[(i - ox) + (j - oy) * gw].az;
+        double old = cell.az;
+        double shifted = cell.az - nu * (cell.az - innerAz);
+        cell.az = cell.damp * shifted;
+        cell.dazdt = (cell.az - old) / tadd2;
+}
+
 void EMField::Update()
 {
         if (!enabled)
@@ -1622,16 +1759,25 @@ void EMField::Update()
                 boundariesDirty = false;
         }
         SyncMaterials();
+        ComputeStaticB();
         CollectRealCharges();
         DepositRealCharges();
 
-        // the wave is integrated in fixed sub-steps of the exact applet timestep;
-        // this keeps the CFL bound (perm contrast <= 2/tadd^2 = 32) satisfied for
-        // every speed setting, matches the applet dynamics much more closely than
-        // one large step per frame, and conserves energy in the linear regime
+        // The wave is integrated in fixed sub-steps. The per-sub-step timestep is
+        // taddEff = EM_TADD_SUB*2/cellSize so the wave keeps the same pixel speed
+        // and pixel wavelength at every grid resolution (task 7); the CFL bound
+        // (perm ratio <= 2/taddEff^2) is enforced by the dynamic permeability
+        // clamp. The clock t advances the CONSTANT EM_TADD_SUB per sub-step, so
+        // source frequencies map to the same spatial wavelength at every
+        // resolution as well. The traversal time of the simulated region depends
+        // only on the region size, never on the grid resolution.
         int substeps = EM_SUBSTEPS[std::clamp(speed, 0, 4)];
-        double tadd = EM_TADD_SUB;
-        double tadd2 = tadd * tadd;
+        double tadd = taddEff;
+        double tadd2 = double(taddEff) * double(taddEff);
+        // outflow band cells are advected, not wave-integrated; nu is the wave
+        // group speed in cells per sub-step, so the band is impedance matched
+        double nu = tadd * 0.5;
+        bool outflow = boundaryMode == EMBND_OPEN || boundaryMode == EMBND_ABSORB;
 
         for (int substep = 0; substep < substeps; substep++)
         {
@@ -1651,6 +1797,11 @@ void EMField::Update()
                 {
                         for (int i = 1; i < gw - 1; i++)
                         {
+                                // outflow band cells skip the wave update entirely
+                                if (outflow && (i < padL || i >= gw - padL || j < padT || j >= gh - padT))
+                                {
+                                        continue;
+                                }
                                 int gi = i + j * gw;
                                 auto &oe = cells[gi];
                                 auto &oew = cells[gi - 1];
@@ -1706,6 +1857,10 @@ void EMField::Update()
                         {
                                 int gi = i + j * gw;
                                 auto &oe = cells[gi];
+                                if (outflow && (i < padL || i >= gw - padL || j < padT || j >= gh - padT))
+                                {
+                                        continue;
+                                }
                                 if (oe.conductivity > 0)
                                 {
                                         double a = -oe.dazdt * oe.conductivity;
@@ -1715,23 +1870,54 @@ void EMField::Update()
                                 oe.az += oe.dazdt * tadd2;
                         }
                 }
-                t += tadd;
-
-                InteractParticles(substep, substeps);
-                FilterGrid();
-
-#if EMFIELD_DEBUG
-                // safety net bookkeeping: the clamp must never engage in normal
-                // operation; if it does, the CFL bound somewhere above is broken
-                for (auto &cell : cells)
+                // --- outflow band sweep (task 8): one-way advection outward ----
+                // Pad cells shift az toward the boundary at the matched wave
+                // speed nu, then bleed energy through their damp factor. The
+                // matched speed (nu = taddEff/2, the scheme's group velocity)
+                // means a wave entering the band keeps its impedance: measured
+                // |R|^2 ~ 0.01 at the default frequency vs ~0.13 for the old
+                // exponential damping ramp. Sweep order matters: each cell must
+                // read its INNER neighbour's pre-sweep value, so the sweep runs
+                // AWAY from the interior (right band descending, left band
+                // ascending, top band descending, bottom band ascending).
+                if (outflow)
                 {
-                        if (std::abs(cell.az) > EM_FIELD_CLAMP || std::abs(cell.dazdt) > EM_FIELD_CLAMP)
+                        // vertical bands (left and right), full height (they also
+                        // cover the four corners); the horizontal bands then
+                        // cover what is left between them
+                        for (int j = 1; j < gh - 1; j++)
                         {
-                                cell.az = std::clamp(cell.az, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
-                                cell.dazdt = std::clamp(cell.dazdt, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
-                                fieldClampHits++;
+                                // right band, descending i so the inner neighbour
+                                // az[i-1] still holds its pre-sweep value
+                                for (int i = gw - 2; i >= gw - padL; i--)
+                                {
+                                        AdvectOutflowCell(i, j, +1, 0, nu, tadd2);
+                                }
+                                // left band, ascending i so az[i+1] is pre-sweep
+                                for (int i = 1; i <= padL - 1; i++)
+                                {
+                                        AdvectOutflowCell(i, j, -1, 0, nu, tadd2);
+                                }
+                        }
+                        for (int i = padL; i < gw - padL; i++)
+                        {
+                                // top band, descending j so az[j-1] is pre-sweep
+                                for (int j = gh - 2; j >= gh - padT; j--)
+                                {
+                                        AdvectOutflowCell(i, j, 0, +1, nu, tadd2);
+                                }
+                                // bottom band, ascending j so az[j+1] is pre-sweep
+                                for (int j = 1; j <= padT - 1; j++)
+                                {
+                                        AdvectOutflowCell(i, j, 0, -1, nu, tadd2);
+                                }
                         }
                 }
+                t += EM_TADD_SUB;
+
+                InteractParticles(substep, substeps);
+
+#if EMFIELD_DEBUG
                 double maxdazdt = 0;
                 for (const auto &cell : cells)
                 {
@@ -1744,28 +1930,60 @@ void EMField::Update()
 #endif
         }
 
-        // --- Task 9: anti-divergence safety net ----------------------------------
-        // The leapfrog scheme conserves energy in the linear regime but feedback
-        // between non-linear pieces (real charge -> field -> real charge, Joule
-        // heating -> temperature-dependent conductivity, etc.) can pump energy
-        // in. Catch the divergence early by detecting cells whose |az| or |dazdt|
-        // has grown well beyond what the simulation normally carries (1e4 is the
-        // hard safety clamp; here we use a softer 1e2 threshold and gently bleed
-        // the excess off across a few frames instead of clamping hard). This is
-        // applied unconditionally (not under EMFIELD_DEBUG) because it is the
-        // user-facing stability net.
+        // once per frame, like the applet: high-frequency noise filter
+        FilterGrid();
+
+        // --- Task 9: energy conservation and the anti-divergence net -------------
+        // In the linear regime the leapfrog scheme conserves energy exactly; the
+        // historically divergent couplings are gone for good:
+        //  * the permeability contrast is CFL-clamped (dynamic bound 2/taddEff^2),
+        //    which removes the old ferromagnet self-excitation at its root;
+        //  * a static monopole field is superposed analytically instead of being
+        //    driven through the wave equation, so it cannot pump energy anymore;
+        //  * all external currents are clamped (EM_JZEXT_MAX).
+        // What remains is a two-level safety net, applied unconditionally:
+        //  1. a hard clamp at EM_FIELD_CLAMP (a runaway must never reach inf),
+        //  2. a soft bleed above EM_SOFT_LIMIT (1e3) that gently drains cells
+        //     whose amplitude grew beyond anything legitimate feedback produces
+        //     (legit f=2 standing waves peak near |az| ~ 900),
+        //  3. a NaN/Inf guard: one poisoned cell used to be able to spread NaN
+        //     through the whole grid permanently; now it is zeroed instead.
         {
-                const double softLimit = 100.0;
-                const double bleedRate = 0.95; // multiplicative decay per frame
                 for (auto &cell : cells)
                 {
-                        if (std::abs(cell.az) > softLimit)
+                        if (!std::isfinite(cell.az) || !std::isfinite(cell.dazdt))
                         {
-                                cell.az *= bleedRate;
+                                cell.az = 1e-10;
+                                cell.dazdt = 1e-10;
+                                cell.jz = 0;
+                                cell.jzext = 0;
+                                cell.jmext = 0;
+#if EMFIELD_DEBUG
+                                fieldClampHits++;
+#endif
+                                continue;
                         }
-                        if (std::abs(cell.dazdt) > softLimit)
+                        if (std::abs(cell.az) > double(EM_FIELD_CLAMP))
                         {
-                                cell.dazdt *= bleedRate;
+                                cell.az = std::clamp(cell.az, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
+#if EMFIELD_DEBUG
+                                fieldClampHits++;
+#endif
+                        }
+                        if (std::abs(cell.dazdt) > double(EM_FIELD_CLAMP))
+                        {
+                                cell.dazdt = std::clamp(cell.dazdt, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
+#if EMFIELD_DEBUG
+                                fieldClampHits++;
+#endif
+                        }
+                        if (std::abs(cell.az) > double(EM_SOFT_LIMIT))
+                        {
+                                cell.az *= EM_SOFT_BLEED;
+                        }
+                        if (std::abs(cell.dazdt) > double(EM_SOFT_LIMIT))
+                        {
+                                cell.dazdt *= EM_SOFT_BLEED;
                         }
                 }
         }
@@ -1794,14 +2012,14 @@ double EMField::GetMagX(int gi) const
 {
         auto &oe = cells[gi];
         double mm = 1 - 1 / oe.perm;
-        return (cells[gi - gw].az - cells[gi + gw].az) * mm + oe.mx;
+        return (cells[gi - gw].az - cells[gi + gw].az) * mm + oe.mx + oe.bstatx;
 }
 
 double EMField::GetMagY(int gi) const
 {
         auto &oe = cells[gi];
         double mm = 1 - 1 / oe.perm;
-        return (cells[gi + 1].az - cells[gi - 1].az) * mm + oe.my;
+        return (cells[gi + 1].az - cells[gi - 1].az) * mm + oe.my + oe.bstaty;
 }
 
 bool EMField::ApplyAdjust(int gi, float strength)
@@ -1881,7 +2099,7 @@ bool EMField::ApplyAdjustMode(int mode, int gi, float strength)
                 if (CellTypeOf(cell) != EMCT_FERROMAGNET)
                         return false;
                 cell.ovMask |= EM_OV_PERM;
-                cell.ovPerm = ClampPerm(vali / 2.0f);
+                cell.ovPerm = ClampPerm(vali / 2.0f, PermMax());
                 return true;
         }
         case EMADJM_J:
@@ -1980,10 +2198,12 @@ bool EMField::ApplyEMProperty(int property, int applyMode, int gi, float value)
                 if (cell.perm <= 1)
                         return false;
                 cell.ovMask |= EM_OV_PERM;
-                cell.ovPerm = ClampPerm(target);
+                cell.ovPerm = ClampPerm(target, PermMax());
                 return true;
         case EMADJP_J:
-                if (cell.jzext == 0)
+                // task 10: works on current sources AND on conductors (sets the
+                // externally driven current flowing inside the conductor)
+                if (cell.jzext == 0 && cell.conductivity <= 0)
                         return false;
                 cell.ovMask |= EM_OV_JZ;
                 cell.ovJz = std::clamp(target, -EM_JZEXT_MAX, EM_JZEXT_MAX);

@@ -27,7 +27,9 @@ static int perform(SimTool *tool, Simulation * sim, Particle * cpart, int x, int
 	if (emf->ApplyAdjust(gi, strength))
 	{
 		// the wave equation needs to know about the material change right away
-		emf->CalcBoundaries();
+		// task 10: defer the O(gw*gh) CalcBoundaries to the next
+		// EMField::Update(); per-dab calls were the EMADJ lag
+		emf->NotifyCellChanged();
 		return 1;
 	}
 	return 0;

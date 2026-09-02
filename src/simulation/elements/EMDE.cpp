@@ -46,7 +46,7 @@ void Element::Element_EMDE()
         HeatConduct = 251;
         Description = ByteString("电介质,介电常数最大,电磁波在其中减速折射(EMWave2 电介质)").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;
@@ -54,8 +54,10 @@ void Element::Element_EMDE()
         HighPressureTransition = NT;
         LowTemperature = ITL;
         LowTemperatureTransition = NT;
-        HighTemperature = ITH;
-        HighTemperatureTransition = NT;
+        // task 4: high melting point + red-hot glow approaching it, exactly
+        // like vanilla FE (1811 K) / TTAN (1941 K); melts back to itself
+        HighTemperature = 1973.0f;
+        HighTemperatureTransition = PT_LAVA; //@ EMDE -> LAVA(EMDE)
 
         Create = &create;
 }

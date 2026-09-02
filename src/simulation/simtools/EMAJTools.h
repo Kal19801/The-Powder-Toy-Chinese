@@ -20,7 +20,8 @@ namespace EMAJAdjust
                 if (emf->ApplyAdjustMode(mode, gi, strength))
                 {
                         // the wave equation needs to know about the material change right away
-                        emf->CalcBoundaries();
+                        // task 10: defer CalcBoundaries to the next frame (see EMADJ)
+                        emf->NotifyCellChanged();
                         return true;
                 }
                 return false;

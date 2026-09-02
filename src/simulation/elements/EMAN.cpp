@@ -4,13 +4,15 @@
 // EMAN: EM antenna. A coupler that bridges the EM field simulation to the
 // vanilla TPT circuit system in the EM -> vanilla direction.
 //
-// While the particle exists, the EM field simulation scans a 3x3 neighbourhood
-// of EM cells around the antenna each frame (in EMField::InteropParticles).
-// If any of those cells carries |E|, |B| or |j| above a small excitation
-// threshold (i.e. the EM zone next to the antenna is actively being driven,
-// not just sitting at the 1e-10 vacuum floor), the antenna fires a vanilla
-// SPRK on every adjacent vanilla conductor (PROP_CONDUCTS, not already
-// sparked). The threshold scales with cellSize so a finer grid still triggers.
+// Task 5: the EM-zone elements CONNECTED to the antenna are its antenna.
+// Each frame (in EMField::InteropParticles) the antenna reads the excitation
+// current |jz + jzext| - the current the wave drives inside those connected
+// elements - of the 3x3 EM-cell neighbourhood around itself and compares it
+// against its threshold. The threshold is .ctype in raw current units
+// (0 = EMAN_THRESHOLD_DEFAULT); set it with the PROP tool or by drawing with
+// a value. When the excitation exceeds the threshold, the antenna fires a
+// vanilla SPRK on every adjacent vanilla conductor (PROP_CONDUCTS, not
+// already sparked and not in spark cooldown).
 //
 // Pair with EMTX (the vanilla -> EM direction) for bidirectional coupling:
 // a vanilla circuit drives EMTX, EMTX radiates an EM wave, the wave reaches
@@ -48,7 +50,7 @@ void Element::Element_EMAN()
         Weight = 100;
 
         HeatConduct = 251;
-        Description = ByteString("电磁天线,把旁边电磁区的激发情况转换成SPRK脉冲,激发相邻的原版导体").FromUtf8();
+        Description = ByteString("电磁天线,把相连电磁区元素里的感应电流转换成SPRK,激发相邻原版导体;.ctype=电流阈值(0=默认0.05)").FromUtf8();
 
         Properties = TYPE_SOLID;
 
@@ -71,5 +73,10 @@ static void create(ELEMENT_CREATE_FUNC_ARGS)
         if (sim->emfOwner)
         {
                 sim->emfOwner->enabled = true;
+        }
+        // the excitation threshold can be set while placing (draw value)
+        if (v > 0)
+        {
+                sim->parts[i].ctype = std::min(v, int(EMAN_THRESHOLD_MAX));
         }
 }

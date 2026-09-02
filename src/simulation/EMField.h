@@ -1,5 +1,6 @@
 #pragma once
 #include "SimulationConfig.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -103,6 +104,11 @@ public:
         int speed = 1;                       // 0 = half, 1 = normal, 2 = double speed
 
         double t = 0;
+        // effective wave timestep of the current grid: taddEff * cellSize stays
+        // constant (EM_TADD_SUB * EM_CELL_SIZE_DEFAULT) so the wave keeps the same
+        // pixel speed and pixel wavelength at every grid resolution; the clock t
+        // always advances EM_TADD_SUB per sub-step (task 7)
+        float taddEff = EM_TADD_SUB;
 
         struct Cell
         {
@@ -140,6 +146,11 @@ public:
                 // wave state
                 double az = 1e-10, dazdt = 1e-10;
                 double damp = 1;
+                // static radial magnetic field contributed by placed magnetic
+                // monopoles (task 3); a true superposed field, deliberately kept
+                // OUT of the wave equation (correct superposition: waves do not
+                // scatter off a static field), consumed by rendering and forces
+                float bstatx = 0, bstaty = 0;
                 // last rendered colour, reused when drawing field lines
                 uint32_t col = 0;
         };
@@ -173,6 +184,15 @@ public:
                 int waveform;
         };
         std::vector<EmwSource> emwSources;
+
+        // one entry per RMON particle found during the last sync; feeds
+        // ComputeStaticB() (task 3)
+        struct MonoSource
+        {
+                int cx, cy;
+                float sign;
+        };
+        std::vector<MonoSource> monoSources;
 
         // real particles found during the last sync (rewritten current system)
         struct RealCharge
@@ -235,8 +255,10 @@ public:
         void RunCalcBoundariesNow();
 
         void SyncMaterials();
+        void ComputeStaticB();
         void CalcBoundaries();
         void SetDamping();
+        void AdvectOutflowCell(int i, int j, int ox, int oy, double nu, double tadd2); // task 8 outflow band
         void RefreshGhostRing(); // PERIODIC boundary: copy the opposite edge into the ghost ring
         void SetupSources();
         void DoSources(double tadd, bool clear);
@@ -267,9 +289,18 @@ public:
         float EffectiveProperty(int property, int gi) const;
 
         // max real particle speed in px per frame, derived from the field
-        // propagation speed so particles can never outrun the field
+        // propagation speed so particles can never outrun the field;
+        // taddEff/2 cells per sub-step * cellSize px * substeps = px/frame,
+        // which is cellSize-independent by design (task 7)
         float MaxParticleSpeed() const
         {
-                return EM_CELLS_PER_SUBSTEP * cellSize * float(EM_SUBSTEPS[speed < 0 || speed > 4 ? 1 : speed]);
+                int ss = EM_SUBSTEPS[speed < 0 || speed > 4 ? 1 : speed];
+                return taddEff * 0.5f * cellSize * float(ss);
+        }
+        // CFL-safe permeability clamp for the current grid resolution:
+        // the contrast ratio against the weakest perm must stay <= 2/taddEff^2
+        float PermMax() const
+        {
+                return std::min(EM_PERM_MAX, EM_PERM_MIN * EmPermRatioMax(taddEff));
         }
 };

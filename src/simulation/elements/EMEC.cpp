@@ -46,7 +46,7 @@ void Element::Element_EMEC()
         HeatConduct = 251;
         Description = ByteString("良导体,电磁场电导率=0.9,吸收大部分电磁波(EMWave2 良导体)").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;
@@ -54,8 +54,10 @@ void Element::Element_EMEC()
         HighPressureTransition = NT;
         LowTemperature = ITL;
         LowTemperatureTransition = NT;
-        HighTemperature = ITH;
-        HighTemperatureTransition = NT;
+        // task 4: high melting point + red-hot glow approaching it, exactly
+        // like vanilla FE (1811 K) / TTAN (1941 K); melts back to itself
+        HighTemperature = 2843.0f;
+        HighTemperatureTransition = PT_LAVA; //@ EMEC -> LAVA(EMEC)
 
         Create = &create;
 }

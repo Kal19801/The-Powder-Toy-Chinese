@@ -28,6 +28,11 @@ namespace
         bool sawVanillaSpark = false;
         bool sawSparkFieldInject = false;
         float driftStartY = 0;
+        // --- task 3 / 5 / 6 / 7 regression state ---
+        double monoE0 = 0;
+        float filingsX0 = 0;
+        double lambdaPxSmall = 0;
+        int emtxCellGi = 0;
 
         void Check(bool cond, const char *what)
         {
@@ -40,6 +45,28 @@ namespace
                         failCount++;
                         std::cerr << "[EMSELFTEST] FAIL: " << what << std::endl;
                 }
+        }
+
+        // spatial wavelength in px of the wave travelling along row y between
+        // x0 and x1, from the zero crossings of az (2 crossings per period)
+        double WaveLambdaPx(const EMField &emf, int y, int x0, int x1)
+        {
+                int crossings = 0;
+                double firstX = -1, lastX = -1;
+                for (int x = x0; x < x1; x++)
+                {
+                        double a = emf.cells[emf.CellIndex(x, y)].az;
+                        double b = emf.cells[emf.CellIndex(x + 1, y)].az;
+                        if ((a < 0 && b >= 0) || (a > 0 && b <= 0))
+                        {
+                                crossings++;
+                                if (firstX < 0) firstX = x;
+                                lastX = x;
+                        }
+                }
+                if (crossings < 4)
+                        return 0;
+                return 2.0 * (lastX - firstX) / (crossings - 1);
         }
 
         double FieldEnergy(const EMField &emf)
@@ -83,7 +110,7 @@ namespace
 
 void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
 {
-        if (frame >= 2200)
+        if (frame >= 4200)
         {
                 // safety net: never hang forever
                 std::cerr << "[EMSELFTEST] FAIL: timed out" << std::endl;
@@ -136,9 +163,12 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                         }
                 }
                 // real charged particles
-                sim->create_part(-1, 600, 100, PT_RELC);
-                sim->create_part(-1, 600, 110, PT_RPRO);
-                sim->create_part(-1, 600, 120, PT_RMON);
+                // spaced far apart so their random initial motion cannot make
+                // them meet (and annihilate) before the case-25 count check, and
+                // away from the right edge kill zone (x >= XRES-CELL)
+                sim->create_part(-1, 560, 100, PT_RELC);
+                sim->create_part(-1, 560, 160, PT_RPRO);
+                sim->create_part(-1, 560, 60, PT_RMON);
                 std::cout << "[EMSELFTEST] setup complete" << std::endl;
                 break;
         }
@@ -206,11 +236,31 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 Check(set[EMADJP_MEDIUM], "EMADJ set mode: dielectric applies to medium cells");
                 Check(set[EMADJP_MAG_DIR], "EMADJ set mode: mag direction applies to magnets");
                 Check(set[EMADJP_MAG_STR], "EMADJ set mode: mag strength applies to magnets");
+                // task 10: the J property also excites a current INSIDE a plain
+                // EM-zone conductor (EMPC has conductivity 1 and no jzext)
+                {
+                        int condGi = emf->CellIndex(100, 180);
+                        bool applied = emf->ApplyEMProperty(EMADJP_J, EMADJA_SET, condGi, 0.5f);
+                        Check(applied, "EMADJ J mode accepts conductor cells (task 10)");
+                }
                 // add / subtract accumulate onto the effective value
                 int gi = emf->CellIndex(100, 180); // an EMPC cell: conductivity 1
                 emf->ApplyEMProperty(EMADJP_CONDUCT, EMADJA_SET, gi, 1.0f);
                 emf->ApplyEMProperty(EMADJP_CONDUCT, EMADJA_SUB, gi, 0.25f);
                 Check(std::abs(emf->cells[gi].ovConduct - 0.75f) < 1e-3, "EMADJ subtract mode accumulates onto the effective value");
+                // task 10: after a SyncMaterials pass the conductor J override
+                // must surface as an injected current in that cell
+                {
+                        // run one Update() manually so the override takes effect
+                        // even though the EM field may be disabled in this stage
+                        bool wasEnabled = emf->enabled;
+                        emf->enabled = true;
+                        emf->Update();
+                        emf->enabled = wasEnabled;
+                        float jz = float(emf->cells[emf->CellIndex(100, 180)].jzext);
+                        Check(std::abs(jz - 0.5f) < 1e-3,
+                                "conductor J override injects current inside the conductor (task 10)");
+                }
                 emf->ApplyEMProperty(EMADJP_CONDUCT, EMADJA_ADD, gi, 0.25f);
                 Check(std::abs(emf->cells[gi].ovConduct - 1.0f) < 1e-3, "EMADJ add mode accumulates onto the effective value");
                 // VacuumCell / ClearCellOverrides (EMCLR + erase integration)
@@ -236,13 +286,25 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 if (driftEl >= 0)
                 {
                         driftStartY = sim->parts.data[driftEl].y;
+                        // kill the random placement velocity so the conduction
+                        // drift takes over cleanly and deterministically
+                        sim->parts.data[driftEl].vx = 0;
+                        sim->parts.data[driftEl].vy = 0;
                 }
                 // annihilation: an electron/proton pair launched at each other must
                 // neutralise when they meet
                 int a1 = sim->create_part(-1, 200, 100, PT_RELC);
                 int a2 = sim->create_part(-1, 210, 100, PT_RPRO);
-                if (a1 >= 0) sim->parts[a1].vx = 0.3f;
-                if (a2 >= 0) sim->parts[a2].vx = -0.3f;
+                if (a1 >= 0)
+                {
+                        sim->parts[a1].vx = 0.3f;
+                        sim->parts[a1].vy = 0; // deterministic head-on course
+                }
+                if (a2 >= 0)
+                {
+                        sim->parts[a2].vx = -0.3f;
+                        sim->parts[a2].vy = 0;
+                }
                 break;
         }
         case 85:
@@ -277,6 +339,26 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                         }
                         std::cout << "[EMSELFTEST] info: drift distance " << moved << "px" << std::endl;
                         Check(moved >= 2.0f, "real charge drifts along a driven conductor (current conducts)");
+                        // diagnostics for the drift rig
+                        {
+                                int carriers = 0;
+                                for (int i = 0; i < sim->parts.active; ++i)
+                                {
+                                        auto &pt = sim->parts.data[i];
+                                        if ((pt.type == PT_RELC || pt.type == PT_RPRO) &&
+                                                std::abs(pt.x - 460.0f) < 6.0f && pt.y > 230.0f && pt.y < 310.0f)
+                                        {
+                                                carriers++;
+                                                std::cout << "[EMSELFTEST] info: carrier at " << pt.x << "," << pt.y
+                                                          << " v=" << pt.vx << "," << pt.vy << std::endl;
+                                        }
+                                }
+                                std::cout << "[EMSELFTEST] info: carriers on the wire: " << carriers << std::endl;
+                                int gi = emf->CellIndex(460, 250);
+                                std::cout << "[EMSELFTEST] info: wire cell cond=" << emf->cells[gi].conductivity
+                                          << " jz=" << emf->cells[gi].jz
+                                          << " jzext=" << emf->cells[gi].jzext << std::endl;
+                        }
                         // annihilation: both carriers of the launched pair are gone
                         int left = 0;
                         for (int i = 0; i < sim->parts.active; ++i)
@@ -549,6 +631,23 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 gameModel.SetEMSpeed(1);
                 break;
         }
+        case 1610:
+        {
+                // region size setting (task 7): the simulated domain expands
+                // beyond the visible canvas and stays centred on it
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                gameModel.SetEMRegionScale(2);
+                Check(emf->visW == 2 * XRES / emf->cellSize && emf->visH == 2 * YRES / emf->cellSize,
+                        "region scale 2 doubles the simulated domain (task 7)");
+                Check(emf->renderOffX == emf->padL + (emf->visW - XRES / emf->cellSize) / 2 &&
+                      emf->renderOffY == emf->padT + (emf->visH - YRES / emf->cellSize) / 2,
+                        "visible canvas stays centred in the enlarged domain (task 7)");
+                gameModel.SetEMRegionScale(1);
+                Check(emf->visW == XRES / emf->cellSize,
+                        "region scale 1 restores the visible canvas as the domain");
+                break;
+        }
         case 1620:
         {
                 // 1-pixel EM grid smoke test (设置 -> 电磁场网格大小 -> 1 像素):
@@ -556,8 +655,11 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 auto *sim = gameModel.GetSimulation();
                 auto *emf = sim->GetEMField();
                 gameModel.SetEMCellSize(1);
-                Check(emf->visW == XRES && emf->visH == YRES && emf->padL == 0,
-                        "1px EM grid: one cell per particle (absorb boundary)");
+                Check(emf->taddEff > EM_TADD_SUB + 1e-6f,
+                        "1px EM grid: wave timestep shrunk (task 7 resolution decoupling)");
+                Check(emf->visW == XRES && emf->visH == YRES &&
+                      emf->renderOffX == emf->padL && emf->renderOffY == emf->padT,
+                        "1px EM grid: one cell per particle, outflow band outside the canvas");
                 emf->cells[emf->CellIndex(300, 100)].dazdt = 1.0; // small probe pulse
                 break;
         }
@@ -569,8 +671,8 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 Check(std::isfinite(e) && e < 1e5,
                         "1px EM grid stays bounded over 60 frames");
                 gameModel.SetEMBoundaryMode(EMBND_OPEN);
-                Check(emf->padL == EM_OPEN_PAD_MAX && emf->gw == XRES + 2 * emf->padL,
-                        "1px EM grid + OPEN boundary: capped invisible pad");
+                Check(emf->padL == EM_PAD_MAX_CELLS && emf->gw == XRES + 2 * emf->padL,
+                        "1px EM grid + OPEN boundary: capped invisible pad (fixed pixel width)");
                 gameModel.SetEMBoundaryMode(EMBND_ABSORB);
                 gameModel.SetEMCellSize(EM_CELL_SIZE_DEFAULT);
                 // every geometry switch above reallocated the field and wiped the
@@ -607,6 +709,185 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 }
                 Check(!anyOv, "clear_sim (new save) clears all EM overrides");
                 Check(leftoverCurrent == 0, "clear_sim drops all currents");
+                // --- task 3 setup: parked monopole + iron filings, no sources ---
+                int mono = sim->create_part(-1, 150, 100, PT_RMON); // N pole (ctype 0)
+                if (mono >= 0)
+                {
+                        sim->parts[mono].vx = 0;
+                        sim->parts[mono].vy = 0;
+                }
+                filingsX0 = 175.0f;
+                for (int x = 165; x <= 185; ++x) sim->create_part(-1, x, 104, PT_DMND); // shelf
+                for (int x = 170; x < 181; ++x) sim->create_part(-1, x, 100, PT_FEPW);
+                sim->emf->enabled = true;
+                monoE0 = FieldEnergy(*sim->GetEMField());
+                break;
+        }
+        case 2180:
+        {
+                // --- task 3 checks: radial static field, filings pulled in,
+                // and NO wave energy pumped by the static source ---
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                auto &c1 = emf->cells[emf->CellIndex(152, 100)]; // 1 cell out
+                std::cout << "[EMSELFTEST] info: monopole bstat at r=1: "
+                          << c1.bstatx << "," << c1.bstaty << std::endl;
+                Check(c1.bstatx > 0.7f && std::abs(c1.bstaty) < 0.2f,
+                        "parked monopole carries a radial static B field (task 3)");
+                auto &c3 = emf->cells[emf->CellIndex(156, 100)]; // 3 cells out
+                Check(c3.bstatx > 0.2f && c3.bstatx < 0.5f,
+                        "monopole static field decays like 1/r (task 3)");
+                // iron filings moved TOWARD the monopole
+                float best = 1e9f;
+                for (int i = 0; i < sim->parts.active; ++i)
+                {
+                        auto &pt = sim->parts.data[i];
+                        if (pt.type == PT_FEPW)
+                                best = std::min(best, pt.x);
+                }
+                std::cout << "[EMSELFTEST] info: closest filing " << best << " (start 170)" << std::endl;
+                Check(best < filingsX0 - 0.3f,
+                        "iron filings are pulled toward a monopole like toward a magnet (task 3)");
+                double e = FieldEnergy(*emf);
+                std::cout << "[EMSELFTEST] info: wave energy with parked monopole " << e
+                          << " (start " << monoE0 << ")" << std::endl;
+                Check(e < monoE0 + 0.05,
+                        "a parked monopole does NOT pump energy into the wave state (task 3)");
+                // --- task 6 setup: vanilla -> EMTX transmitter rig ---
+                // METL line sparked from its left end; EMTX watches its right end
+                for (int x = 212; x <= 230; ++x) sim->create_part(-1, x, 80, PT_METL);
+                int tx = sim->create_part(-1, 231, 80, PT_EMTX);
+                if (tx >= 0)
+                {
+                        sim->parts[tx].ctype = 20; // carrier frequency 20 -> ~107 frame burst
+                        emtxCellGi = emf->CellIndex(231, 80);
+                }
+                // spark the METL line (vanilla conversion of the conductor)
+                {
+                        unsigned r = sim->pmap[80][215];
+                        if (r)
+                        {
+                                int ri = ID(r);
+                                sim->parts[ri].ctype = PT_METL;
+                                sim->part_change_type(ri, 215, 80, PT_SPRK);
+                                sim->parts[ri].life = 4;
+                        }
+                }
+                break;
+        }
+        case 2270:
+        {
+                // --- task 6 checks: burst started and reaches the field ---
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                // find the EMTX particle
+                int found = -1;
+                for (int i = 0; i < sim->parts.active; ++i)
+                {
+                        if (sim->parts.data[i].type == PT_EMTX)
+                        {
+                                found = i;
+                        }
+                }
+                Check(found >= 0, "EMTX transmitter exists");
+                if (found >= 0)
+                {
+                        std::cout << "[EMSELFTEST] info: EMTX tmp=" << sim->parts.data[found].tmp << std::endl;
+                        Check(sim->parts.data[found].tmp > 0,
+                                "EMTX starts a burst when the adjacent conductor is sparked (task 6)");
+                        Check(std::abs(emf->cells[emtxCellGi].jzext) > 1e-3,
+                                "EMTX burst reaches the field as an injected current (task 6)");
+                }
+                break;
+        }
+        case 2400:
+        {
+                // --- task 6: the burst is finite and stops by itself ---
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                int found = -1;
+                for (int i = 0; i < sim->parts.active; ++i)
+                {
+                        if (sim->parts.data[i].type == PT_EMTX)
+                                found = i;
+                }
+                if (found >= 0)
+                {
+                        Check(sim->parts.data[found].tmp == 0,
+                                "EMTX burst ends by itself (finite wave packet, task 6)");
+                }
+                Check(std::abs(emf->cells[emtxCellGi].jzext) < 1e-9,
+                        "EMTX injects nothing while idle (task 6)");
+                // --- task 5 setup: EMJP source -> EMEC bar -> EMAN -> METL ---
+                for (int x = 100; x <= 104; ++x) sim->create_part(-1, x, 300, PT_EMJP);
+                for (int x = 108; x <= 141; ++x) sim->create_part(-1, x, 300, PT_EMEC);
+                sim->create_part(-1, 143, 300, PT_EMAN);
+                for (int x = 144; x <= 165; ++x) sim->create_part(-1, x, 300, PT_METL); // directly adjacent
+                break;
+        }
+        case 2520:
+        {
+                // --- task 5 check: the antenna fired the vanilla conductor ---
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                (void)emf;
+                int sparks = 0;
+                for (int i = 0; i < sim->parts.active; ++i)
+                {
+                        auto &pt = sim->parts.data[i];
+                        if (pt.type == PT_SPRK && pt.ctype == PT_METL &&
+                            pt.y > 295 && pt.y < 305 && pt.x > 140 && pt.x < 170)
+                        {
+                                sparks++;
+                        }
+                }
+                std::cout << "[EMSELFTEST] info: sparks on the antenna-fed METL line: " << sparks << std::endl;
+                Check(sparks > 0,
+                        "EMAN sparks the adjacent vanilla conductor when the connected EM elements carry current (task 5)");
+                // --- task 7 setup: wavelength probe at cellSize 2 ---
+                sim->clear_sim();
+                gameModel.SetEMBoundaryMode(EMBND_CLOSED);
+                gameModel.SetEMCellSize(2);
+                gameModel.SetEMSourceMode(EMSRC_NONE);
+                sim->create_part(-1, 306, 192, PT_EMW, 20); // frequency 20
+                sim->emf->enabled = true;
+                break;
+        }
+        case 3020:
+        {
+                // 530 frames after the source went live: the wave has filled
+                // x 306..~570 but has NOT yet reached the CLOSED side walls
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                lambdaPxSmall = WaveLambdaPx(*emf, 192, 400, 550);
+                std::cout << "[EMSELFTEST] info: lambda at cellSize 2: " << lambdaPxSmall << "px" << std::endl;
+                Check(lambdaPxSmall > 15 && lambdaPxSmall < 45,
+                        "wave wavelength is in the expected pixel range at cellSize 2");
+                // --- task 7: repeat the probe at cellSize 4 ---
+                sim->clear_sim();
+                gameModel.SetEMCellSize(4);
+                Check(emf->taddEff < EM_TADD_SUB - 1e-6f,
+                        "wave timestep shrinks for the coarser grid per the decoupling rule (task 7)");
+                sim->create_part(-1, 306, 192, PT_EMW, 20);
+                sim->emf->enabled = true;
+                break;
+        }
+        case 3560:
+        {
+                auto *sim = gameModel.GetSimulation();
+                auto *emf = sim->GetEMField();
+                double lambdaPxBig = WaveLambdaPx(*emf, 192, 400, 550);
+                std::cout << "[EMSELFTEST] info: lambda at cellSize 4: " << lambdaPxBig << "px" << std::endl;
+                Check(lambdaPxBig > 15 && lambdaPxBig < 45,
+                        "wave wavelength is in the expected pixel range at cellSize 4");
+                if (lambdaPxSmall > 0 && lambdaPxBig > 0)
+                {
+                        double rel = std::abs(lambdaPxBig - lambdaPxSmall) / lambdaPxSmall;
+                        std::cout << "[EMSELFTEST] info: relative wavelength difference across resolutions: "
+                                  << rel * 100 << "%" << std::endl;
+                        Check(rel < 0.25,
+                                "wave wavelength in px is (nearly) independent of the grid resolution (task 7)");
+                }
                 if (failCount)
                 {
                         std::cerr << "[EMSELFTEST] RESULT: " << failCount << " FAILURES" << std::endl;

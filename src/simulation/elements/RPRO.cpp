@@ -7,12 +7,13 @@
 // EMWave2 jz mechanism extended from static sources to moving charges.
 //
 // Task 2: this element used to be called "real proton"; it is now presented to
-// the user as the positive charge (正电荷). The physics is unchanged (charge +1,
-// mass = EM_PROTON_MASS so it responds sluggishly, like a real proton), but
-// the motion parameters are now identical to vanilla ELEC (AirLoss=1, Loss=1,
-// Collision=-0.99) and the create() function gives the particle a random
-// initial velocity like vanilla ELEC, so a freshly placed charge actually
-// moves off instead of sitting still waiting for the EM field to push it.
+// the user as the positive charge (正电荷). Motion parameters are identical to
+// vanilla ELEC (AirLoss=1, Loss=1, Collision=-0.99) and the create() function
+// gives the particle a random initial velocity like vanilla ELEC, so a freshly
+// placed charge actually moves off. The field-response inertia is also the
+// electron's (mass 1) - the task asks for motion like the original electron,
+// so the only difference between the two charges is the SIGN of the charge
+// (Coulomb force, quiver phase, drift direction).
 // The Update function is the explicit motion update requested by the task:
 // it nudges a stationary charge into motion (matching vanilla ELEC semantics)
 // and updates the EM field state flag if the field is off.
@@ -25,7 +26,7 @@ static void create(ELEMENT_CREATE_FUNC_ARGS);
 void Element::Element_RPRO()
 {
         Identifier = "DEFAULT_PT_RPRO";
-        Name = "正电荷"; // task 2: real proton -> positive charge
+        Name = "RPRO"; // task 2: real proton -> positive charge
         Colour = 0xFF9060_rgb;
         MenuVisible = 1;
         MenuSection = SC_REAL;
@@ -51,7 +52,7 @@ void Element::Element_RPRO()
         Weight = -1;
 
         HeatConduct = 251;
-        Description = ByteString("正电荷,带正电的载流子(质量为电子1836倍,响应较迟钝),受电磁场驱动并辐射电磁波,放出来会动").FromUtf8();
+        Description = ByteString("正电荷,带正电的载流子,与负电荷相遇湮灭").FromUtf8();
 
         Properties = TYPE_ENERGY;
 

@@ -46,7 +46,7 @@ void Element::Element_EMFM()
         HeatConduct = 251;
         Description = ByteString("铁磁体,磁导率=5/电导率=0.5,可被EM调整工具磁化(EMWave2 铁磁体)").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;
@@ -54,8 +54,10 @@ void Element::Element_EMFM()
         HighPressureTransition = NT;
         LowTemperature = ITL;
         LowTemperatureTransition = NT;
-        HighTemperature = ITH;
-        HighTemperatureTransition = NT;
+        // task 4: high melting point + red-hot glow approaching it, exactly
+        // like vanilla FE (1811 K) / TTAN (1941 K); melts back to itself
+        HighTemperature = 1811.0f;
+        HighTemperatureTransition = PT_LAVA; //@ EMFM -> LAVA(EMFM)
 
         Create = &create;
 }

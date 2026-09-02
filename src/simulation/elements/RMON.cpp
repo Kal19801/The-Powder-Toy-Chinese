@@ -7,15 +7,18 @@
 // EMWave2 jz mechanism extended from static sources to moving charges.
 //
 // Real magnetic monopole: .ctype selects the pole (0 = N, 1 = S).
-// Task 3: a stationary monopole now also carries a static magnetic field of
-// the same order as a painted EMMG magnet - the EMField deposits a constant
-// jmext = +-EM_MONO_STATIC in the cell each frame, which is the dual of how
-// EMJP deposits a constant jzext. Moving monopoles additionally deposit
-// jmext along their path, so a moving monopole radiates waves.
+// Task 3: a monopole carries a true STATIC radial magnetic field
+// B = g*EM_MONO_FIELD*r_hat/r (strength 1 at one cell distance, the same
+// order as a painted EMMG magnet's near field), computed analytically in
+// EMField::ComputeStaticB() and superposed on the dynamic field. It is kept
+// out of the wave equation on purpose: Maxwell is linear, so a static field
+// must not scatter waves, and driving it through the wave equation (the old
+// jmext approach) would pump energy into the simulation forever. Moving
+// monopoles additionally deposit jmext along their path, so a moving
+// monopole radiates waves, exactly as a moving magnetic charge should.
 // Velocity is strictly clamped to the field propagation speed (CFL), so no
 // current is ever deposited outside the light cone of the field.
 
-static int update(UPDATE_FUNC_ARGS);
 static void create(ELEMENT_CREATE_FUNC_ARGS);
 
 void Element::Element_RMON()
@@ -47,7 +50,7 @@ void Element::Element_RMON()
         Weight = -1;
 
         HeatConduct = 251;
-        Description = ByteString("真实磁单极子,.ctype选极性(0=N极,1=S极),受磁场B直接驱动,静止时也带磁场(强度与磁铁相同)").FromUtf8();
+        Description = ByteString("真实磁单极子,.ctype选极性(0=N极,1=S极),受B场直接驱动,自带径向静态磁场(近场强度与磁铁相同),与磁铁一样吸引铁屑").FromUtf8();
 
         Properties = TYPE_ENERGY;
 
@@ -60,7 +63,6 @@ void Element::Element_RMON()
         HighTemperature = ITH;
         HighTemperatureTransition = NT;
 
-        Update = &update;
         Create = &create;
 }
 
@@ -81,16 +83,8 @@ static void create(ELEMENT_CREATE_FUNC_ARGS)
         sim->parts[i].vy = 2.0f * sinf(a);
 }
 
-static int update(UPDATE_FUNC_ARGS)
-{
-        // Motion update function (task 2 / task 3): same nudge as RPRO/RELC
-        // so a monopole that came to rest still gets picked up by the
-        // framework's movement phase and can be pushed around by the B field.
-        if (parts[i].vx == 0.0f && parts[i].vy == 0.0f)
-        {
-                float a = sim->rng.between(0, 359) * std::numbers::pi_v<float> / 180.0f;
-                parts[i].vx = 0.5f * cosf(a);
-                parts[i].vy = 0.5f * sinf(a);
-        }
-        return 0;
-}
+// No update() nudge: unlike the electric charges, a monopole at rest in a
+// field-free region must STAY at rest, otherwise it would keep radiating
+// (a moving magnetic charge radiates) and its static field would wander.
+// A freshly placed monopole still moves off, because create() gives it a
+// random initial velocity like the other real particles.
