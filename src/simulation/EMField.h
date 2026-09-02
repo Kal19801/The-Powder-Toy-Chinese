@@ -75,12 +75,7 @@ enum EmAdjustApply
 // currents are the ones the applet understands (external sources driving the
 // wave equation and induced currents inside conductors), carried exclusively by
 // the dedicated EM / real zone elements. Original TPT elements are NOT mapped
-// onto the field anymore and keep their vanilla behaviour. Real charged
-// particles (protons, electrons, magnetic monopoles) inject current into the
-// cells they cross, the EMWave2 jz mechanism extended from static sources to
-// moving charges; their speed is clamped to the field propagation speed so no
-// current is ever deposited outside the light cone (CFL), which is what used
-// to drive the ferromagnet self-excitation divergence in the old version.
+// onto the field anymore and keep their vanilla behaviour.
 //
 // The wave is integrated in fixed sub-steps of EM_TADD_SUB (the exact applet
 // timestep), {1,2,4} of them per frame depending on the speed setting, which
@@ -93,7 +88,7 @@ public:
 
         bool enabled = false;
         int cellSize = EM_CELL_SIZE_DEFAULT; // EM cell edge in pixels
-        int regionScale = EM_REGION_SCALE_DEFAULT; // domain multiplier (1 = visible canvas, 2/4/8 = extends beyond)
+        float regionScale = EM_REGION_SCALE_DEFAULT; // domain multiplier (0.5 = central half of the canvas, 1 = visible canvas, 2/4/8 = extends beyond)
         int boundaryMode = EMBND_DEFAULT;    // one of EmBoundaryMode
         int viewMode = EMVIEW_DEFAULT;       // one of EmViewMode, used by the renderer
         int sourceMode = EMSRC_DEFAULT;      // one of EmSourceMode
@@ -121,11 +116,8 @@ public:
                 bool resonant = false;
                 bool boundary = false;   // cell sits at a material boundary
                 bool gray = false;       // cell carries any material
-                // external current injected this frame (EM elements, real particles, tools)
+                // external current injected this frame (EM elements, tools)
                 double jzext = 0;
-                // magnetic current injected by moving monopoles this frame; drives
-                // dazdt directly, the dual of how jz drives the wave equation
-                double jmext = 0;
                 // induced current inside conductors (applet jz semantics); only
                 // meaningful while the cell carries a conductor or a resonant medium
                 double jz = 0;
@@ -146,11 +138,6 @@ public:
                 // wave state
                 double az = 1e-10, dazdt = 1e-10;
                 double damp = 1;
-                // static radial magnetic field contributed by placed magnetic
-                // monopoles (task 3); a true superposed field, deliberately kept
-                // OUT of the wave equation (correct superposition: waves do not
-                // scatter off a static field), consumed by rendering and forces
-                float bstatx = 0, bstaty = 0;
                 // last rendered colour, reused when drawing field lines
                 uint32_t col = 0;
         };
@@ -162,8 +149,10 @@ public:
         // With regionScale > 1 the simulation domain is regionScale * (XRES x YRES)
         // pixels, so visW > XRES/cellSize: the cells outside the visible canvas are
         // simulated normally but never rendered, letting waves travel through the
-        // invisible padding before reaching the actual boundary.
-        // CLOSED uses no padding (hard wall at domain edge); ABSORB and OPEN pad
+        // invisible padding before reaching the actual boundary. With
+        // regionScale = 0.5 the domain is the CENTRAL HALF of the canvas and
+        // renderOffX/Y go NEGATIVE: canvas pixels outside the domain have no field.
+        // CLOSED uses no padding (hard wall at domain edge); OPEN pads
         // with an invisible split-field PML band; PERIODIC pads by a one cell
         // ghost ring that is refreshed from the opposite edge each sub-step.
         int padL = 0, padT = 0;
@@ -185,29 +174,6 @@ public:
         };
         std::vector<EmwSource> emwSources;
 
-        // one entry per RMON particle found during the last sync; feeds
-        // ComputeStaticB() (task 3)
-        struct MonoSource
-        {
-                int cx, cy;
-                float sign;
-        };
-        std::vector<MonoSource> monoSources;
-
-        // real particles found during the last sync (rewritten current system)
-        struct RealCharge
-        {
-                int i;        // particle index
-                float q;      // signed electric charge (proton +1, electron -1)
-                float g;      // signed magnetic charge (monopole, 0 otherwise)
-                float mass;   // relative mass (proton 1836, electron 1)
-                int gi;       // cell the particle currently sits in
-                float x, y;   // pixel position
-                float vx, vy; // velocity (px per frame), already CFL-clamped
-        };
-        std::vector<RealCharge> realCharges;
-        int realChargeCount = 0; // total number of real particles last sync
-
         // applet source bookkeeping
         struct Source
         {
@@ -227,7 +193,7 @@ public:
         int filterCount = 0;
         int margin = EM_MARGIN_AT_4; // absorbing edge width in cells
 
-        // --- split-field PML state (task 8, OPEN / ABSORB only) ----------------
+        // --- split-field PML state (task 8, OPEN only) ------------------------
         // The band replaces the wave equation with a damped split system:
         //   wx = wx*bX + Gx(az) ; wy = wy*bY + Gy(az)   (velocity split)
         //   ux = ux*bX + wx*tadd^2 ; uy = uy*bY + wy*tadd^2 (damped split
@@ -249,7 +215,7 @@ public:
         explicit EMField(Simulation & sim);
 
         void SetCellSize(int newCellSize); // reallocates and clears the grid
-        void SetRegionScale(int newScale); // reallocates and clears the grid
+        void SetRegionScale(float newScale); // reallocates and clears the grid
         void SetBoundaryMode(int newMode); // reallocates and clears the grid for the new boundary geometry
         void ApplyGridGeometry();          // derive gw/gh/pad/vis from cellSize + regionScale + boundaryMode and reallocate
         void Clear();                      // resets the wave state, keeps materials (applet doClear)
@@ -269,7 +235,6 @@ public:
         void RunCalcBoundariesNow();
 
         void SyncMaterials();
-        void ComputeStaticB();
         void CalcBoundaries();
         void SetDamping();
         void PmlStepA(); // split-field PML velocity update (band cells, task 8)
@@ -278,15 +243,21 @@ public:
         void SetupSources();
         void DoSources(double tadd, bool clear);
         void FilterGrid();
-        void CollectRealCharges();
-        void DepositRealCharges();
-        void InteractParticles(int substep, int substeps);
-        void InteropParticles(); // once per frame: vanilla spark on contact, charge neutralisation
+        // once per frame, after the wave sub-steps: magnetic pressure on
+        // ferromagnetic / diamagnetic materials (incl. superconductors below Tc),
+        // the motor effect (j x B on current-carrying conductors) and Joule
+        // heating of resistive real-zone conductors; the force is normalised by
+        // the sub-step count so the per-frame impulse is speed-setting independent
+        void ApplyFieldForces(int substeps);
+        void InteropParticles(); // once per frame: EMAN antenna -> vanilla spark
 
         double GetMagX(int gi) const;
         double GetMagY(int gi) const;
 
-        int CellIndex(int px, int py) const; // pixel coordinates -> cell index (clamped)
+        int CellIndex(int px, int py) const; // pixel coordinates -> cell index (clamped into the domain)
+        // is this canvas pixel inside the simulated domain? with regionScale < 1
+        // parts of the visible canvas simply have no EM field
+        bool PixelInDomain(int px, int py) const;
 
         static int CellTypeOf(const Cell &oe); // applet OscElement::getType()
 
@@ -304,9 +275,8 @@ public:
         float EffectiveProperty(int property, int gi) const;
 
         // max real particle speed in px per frame, derived from the field
-        // propagation speed so particles can never outrun the field;
-        // taddEff/2 cells per sub-step * cellSize px * substeps = px/frame,
-        // which is cellSize-independent by design (task 7)
+        // propagation speed; taddEff/2 cells per sub-step * cellSize px *
+        // substeps = px/frame, which is cellSize-independent by design (task 7)
         float MaxParticleSpeed() const
         {
                 int ss = EM_SUBSTEPS[speed < 0 || speed > 4 ? 1 : speed];

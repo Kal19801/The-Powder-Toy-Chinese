@@ -25,12 +25,8 @@ namespace
         int failCount = 0;
         double closedE0 = 0;
         double openE0 = 0;
-        bool sawVanillaSpark = false;
-        bool sawSparkFieldInject = false;
-        float driftStartY = 0;
-        // --- task 3 / 5 / 6 / 7 regression state ---
-        double monoE0 = 0;
-        float filingsX0 = 0;
+        // --- superconductor regression state ---
+        float scTestY0 = 0, scControlY0 = 0;
         double lambdaPxSmall = 0;
         int emtxCellGi = 0;
 
@@ -44,6 +40,26 @@ namespace
                 {
                         failCount++;
                         std::cerr << "[EMSELFTEST] FAIL: " << what << std::endl;
+                }
+        }
+
+        // fresh superconductor samples: SCND is solid so the probes stay put
+        void sim_create_scnd_cold(GameModel &gameModel, int x, int y)
+        {
+                auto *sim = gameModel.GetSimulation();
+                int i = sim->create_part(-1, x, y, PT_SCND);
+                if (i >= 0)
+                {
+                        sim->parts[i].temp = 4.0f; // deep below Tc
+                }
+        }
+        void sim_create_scnd_warm(GameModel &gameModel, int x, int y)
+        {
+                auto *sim = gameModel.GetSimulation();
+                int i = sim->create_part(-1, x, y, PT_SCND);
+                if (i >= 0)
+                {
+                        sim->parts[i].temp = 295.0f; // room temperature, above Tc
                 }
         }
 
@@ -162,13 +178,6 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                                 sim->parts[i].temp = 4.0f;
                         }
                 }
-                // real charged particles
-                // spaced far apart so their random initial motion cannot make
-                // them meet (and annihilate) before the case-25 count check, and
-                // away from the right edge kill zone (x >= XRES-CELL)
-                sim->create_part(-1, 560, 100, PT_RELC);
-                sim->create_part(-1, 560, 160, PT_RPRO);
-                sim->create_part(-1, 560, 60, PT_RMON);
                 std::cout << "[EMSELFTEST] setup complete" << std::endl;
                 break;
         }
@@ -203,8 +212,6 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                                 magnets++;
                 }
                 Check(magnets >= 20, "EMMGD/EMMGU elements mapped to magnet cells");
-                // real particles registered
-                Check(emf->realChargeCount == 3, "RPRO/RELC/RMON registered as real charges");
                 gameModel.SetEMViewMode(EMVIEW_B_LINES); // exercise field line rendering
                 break;
         }
@@ -272,39 +279,11 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
         case 65:
         {
                 gameModel.SetEMViewMode(EMVIEW_TYPE); // exercise material palette
-                auto *sim = gameModel.GetSimulation();
-                // --- interop + conduction test setup ---
-                // vanilla METL line with a real electron parked on it: the charge
-                // must keep sparking the metal (EM -> vanilla direction)
-                for (int x = 300; x < 340; ++x) sim->create_part(-1, x, 60, PT_METL);
-                sim->create_part(-1, 320, 60, PT_RELC);
-                // copper wire driven by an EMJP source at its top: a real electron
-                // inside the wire must drift ALONG the wire (conduction)
-                for (int y = 240; y < 300; ++y) sim->create_part(-1, 460, y, PT_CU);
-                for (int y = 232; y < 240; ++y) sim->create_part(-1, 460, y, PT_EMJP);
-                int driftEl = sim->create_part(-1, 460, 250, PT_RELC);
-                if (driftEl >= 0)
-                {
-                        driftStartY = sim->parts.data[driftEl].y;
-                        // kill the random placement velocity so the conduction
-                        // drift takes over cleanly and deterministically
-                        sim->parts.data[driftEl].vx = 0;
-                        sim->parts.data[driftEl].vy = 0;
-                }
-                // annihilation: an electron/proton pair launched at each other must
-                // neutralise when they meet
-                int a1 = sim->create_part(-1, 200, 100, PT_RELC);
-                int a2 = sim->create_part(-1, 210, 100, PT_RPRO);
-                if (a1 >= 0)
-                {
-                        sim->parts[a1].vx = 0.3f;
-                        sim->parts[a1].vy = 0; // deterministic head-on course
-                }
-                if (a2 >= 0)
-                {
-                        sim->parts[a2].vx = -0.3f;
-                        sim->parts[a2].vy = 0;
-                }
+                // fresh superconductor bars for the case-105 mapping checks
+                // (created AFTER the case-45 adjust sweep so no tool override
+                // pollutes them; SCND is solid and does not move)
+                for (int x = 160; x < 200; ++x) sim_create_scnd_cold(gameModel, x, 250);
+                for (int x = 220; x < 260; ++x) sim_create_scnd_warm(gameModel, x, 250);
                 break;
         }
         case 85:
@@ -316,62 +295,52 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 Check(true, "options window constructed and survived NotifySettingsChanged");
                 break;
         }
+        case 104:
+        {
+                // pin the sample temperatures right before the mapping check:
+                // TPT heat exchange with the 295 K ambient would otherwise drift
+                // the 4 K bar towards Tc over the 40 frames in between
+                auto *sim = gameModel.GetSimulation();
+                for (int i = 0; i < sim->parts.active; ++i)
+                {
+                        auto &p = sim->parts.data[i];
+                        if (p.type != PT_SCND)
+                        {
+                                continue;
+                        }
+                        if (p.x >= 160 && p.x < 200 && std::abs(p.y - 250) < 3)
+                        {
+                                p.temp = 4.0f;
+                        }
+                        else if (p.x >= 220 && p.x < 260 && std::abs(p.y - 250) < 3)
+                        {
+                                p.temp = 295.0f;
+                        }
+                }
+                break;
+        }
         case 105:
         {
                 std::cout << "[EMSELFTEST] options window survived NotifySettingsChanged" << std::endl;
-                Check(sawVanillaSpark, "real charge on vanilla metal keeps it sparked (EM -> vanilla interop)");
-                // Task 1: SPRK no longer excites the EM field - the test now verifies the
-                // reverse direction is OFF, so the EMField is driven only by its own
-                // sources and by real charges, not by vanilla sparks.
-                Check(!sawSparkFieldInject, "powered vanilla spark does NOT inject current into the EM field (task 1)");
-                // conduction drift: the electron on the driven copper wire moved along it
+                // superconductor temperature mapping, probed on the fresh bars
+                // created at case 65 (temps re-pinned at case 104)
                 {
                         auto *sim = gameModel.GetSimulation();
                         auto *emf = sim->GetEMField();
-                        float moved = 0;
-                        for (int i = 0; i < sim->parts.active; ++i)
-                        {
-                                auto &p = sim->parts.data[i];
-                                if (p.type == PT_RELC && std::abs(p.x - 460.0f) < 3.0f)
-                                {
-                                        moved = std::max(moved, std::abs(p.y - driftStartY));
-                                }
-                        }
-                        std::cout << "[EMSELFTEST] info: drift distance " << moved << "px" << std::endl;
-                        Check(moved >= 2.0f, "real charge drifts along a driven conductor (current conducts)");
-                        // diagnostics for the drift rig
-                        {
-                                int carriers = 0;
-                                for (int i = 0; i < sim->parts.active; ++i)
-                                {
-                                        auto &pt = sim->parts.data[i];
-                                        if ((pt.type == PT_RELC || pt.type == PT_RPRO) &&
-                                                std::abs(pt.x - 460.0f) < 6.0f && pt.y > 230.0f && pt.y < 310.0f)
-                                        {
-                                                carriers++;
-                                                std::cout << "[EMSELFTEST] info: carrier at " << pt.x << "," << pt.y
-                                                          << " v=" << pt.vx << "," << pt.vy << std::endl;
-                                        }
-                                }
-                                std::cout << "[EMSELFTEST] info: carriers on the wire: " << carriers << std::endl;
-                                int gi = emf->CellIndex(460, 250);
-                                std::cout << "[EMSELFTEST] info: wire cell cond=" << emf->cells[gi].conductivity
-                                          << " jz=" << emf->cells[gi].jz
-                                          << " jzext=" << emf->cells[gi].jzext << std::endl;
-                        }
-                        // annihilation: both carriers of the launched pair are gone
-                        int left = 0;
-                        for (int i = 0; i < sim->parts.active; ++i)
-                        {
-                                auto &p = sim->parts.data[i];
-                                if ((p.type == PT_RELC || p.type == PT_RPRO) &&
-                                        p.y > 90 && p.y < 110 && p.x > 180 && p.x < 230)
-                                {
-                                        left++;
-                                }
-                        }
-                        Check(left == 0, "opposite carriers annihilate on contact");
-                        (void)emf;
+                        auto &cold = emf->cells[emf->CellIndex(180, 250)];
+                        std::cout << "[EMSELFTEST] info: cold SCND cell cond=" << cold.conductivity
+                                  << " perm=" << cold.perm << std::endl;
+                        Check(cold.conductivity >= 1.0f - 1e-6f,
+                                "superconductor below Tc maps to a perfect conductor");
+                        Check(cold.perm <= EM_SC_PERM + 1e-6f && cold.perm > 0.0f,
+                                "superconductor below Tc maps to the diamagnetic Meissner response");
+                        auto &warm = emf->cells[emf->CellIndex(240, 250)];
+                        std::cout << "[EMSELFTEST] info: warm SCND cell cond=" << warm.conductivity
+                                  << " perm=" << warm.perm << std::endl;
+                        Check(std::abs(warm.conductivity - EM_SC_QUENCH_CONDUCT) < 1e-6f,
+                                "superconductor above Tc is quenched to a lossy conductor");
+                        Check(std::abs(warm.perm - 1.0f) < 1e-6f,
+                                "quenched superconductor carries no Meissner response");
                 }
                 break;
         }
@@ -393,28 +362,7 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 }
                 std::cout << "[EMSELFTEST] info: max real conductor temp " << maxRealTemp << "K" << std::endl;
                 Check(maxRealTemp > 295.5, "Joule heating raises real conductor temperature");
-                // the velocity clamp: give an electron a huge kick and verify the
-                // next frames clamp it back to the field propagation speed
-                int el = -1;
-                for (int i = 0; i < parts.active; ++i)
-                {
-                        if (parts.data[i].type == PT_RELC)
-                        {
-                                el = i;
-                                break;
-                        }
-                }
-                if (el >= 0)
-                {
-                        parts.data[el].vx = 50.0f; // way beyond the speed of light
-                        parts.data[el].vy = 50.0f;
-                        float vmax = emf->MaxParticleSpeed();
-                        std::cout << "[EMSELFTEST] info: max particle speed " << vmax << " px/frame" << std::endl;
-                }
-                else
-                {
-                        Check(false, "real electron present for the FTL clamp test");
-                }
+                (void)emf;
                 gameModel.SetEMViewMode(EMVIEW_E);
                 break;
         }
@@ -422,22 +370,7 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
         {
                 auto *sim = gameModel.GetSimulation();
                 auto *emf = sim->GetEMField();
-                float vmax = emf->MaxParticleSpeed();
-                auto &parts = sim->parts;
-                bool clamped = true;
-                for (int i = 0; i < parts.active; ++i)
-                {
-                        auto &p = parts.data[i];
-                        if (p.type == PT_RPRO || p.type == PT_RELC || p.type == PT_RMON)
-                        {
-                                float sp = std::sqrt(p.vx * p.vx + p.vy * p.vy);
-                                if (sp > vmax * 1.001f)
-                                {
-                                        clamped = false;
-                                }
-                        }
-                }
-                Check(clamped, "real particles never exceed the field propagation speed (FTL clamp)");
+                (void)sim;
                 // energy boundedness: the field energy must stay finite over the run
                 double energy = FieldEnergy(*emf);
                 std::cout << "[EMSELFTEST] info: field energy " << energy << std::endl;
@@ -522,7 +455,6 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 {
                         int t = sim->parts.data[i].type;
                         if (t == PT_EMW || t == PT_EMJP || t == PT_EMJN ||
-                                t == PT_RPRO || t == PT_RELC || t == PT_RMON ||
                                 t == PT_EMMGD || t == PT_EMMGU || t == PT_EMMGL ||
                                 t == PT_EMMGR || t == PT_EMMG)
                         {
@@ -634,7 +566,7 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 }
                 std::cout << "[EMSELFTEST] info: wrapped amplitude at left edge " << wrapped << std::endl;
                 Check(wrapped > 0.05, "PERIODIC boundary wraps waves across the seam");
-                gameModel.SetEMBoundaryMode(EMBND_ABSORB); // restore the default
+                gameModel.SetEMBoundaryMode(EMBND_OPEN); // restore the default
                 gameModel.SetEMSpeed(1);
                 break;
         }
@@ -653,6 +585,19 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 gameModel.SetEMRegionScale(1);
                 Check(emf->visW == XRES / emf->cellSize,
                         "region scale 1 restores the visible canvas as the domain");
+                // --- 0.5x: the domain shrinks to the central half of the canvas ---
+                gameModel.SetEMRegionScale(0.5f);
+                Check(emf->visW == XRES / 2 / emf->cellSize && emf->visH == YRES / 2 / emf->cellSize,
+                        "region scale 0.5 shrinks the domain to the central quarter of the canvas");
+                Check(emf->renderOffX < 0 && emf->renderOffY < 0,
+                        "region scale 0.5 centres the smaller domain on the canvas (negative render offset)");
+                Check(emf->CellIndex(0, 0) == emf->padL + emf->padT * emf->gw,
+                        "region scale 0.5: off-domain pixels clamp onto the domain edge cell");
+                Check(!emf->PixelInDomain(2, 2) && emf->PixelInDomain(XRES / 2, YRES / 2),
+                        "region scale 0.5: PixelInDomain splits the canvas correctly");
+                gameModel.SetEMRegionScale(1);
+                Check(emf->visW == XRES / emf->cellSize,
+                        "region scale 1 restores again after 0.5x");
                 break;
         }
         case 1620:
@@ -680,7 +625,7 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 gameModel.SetEMBoundaryMode(EMBND_OPEN);
                 Check(emf->padL == EM_PAD_MAX_CELLS && emf->gw == XRES + 2 * emf->padL,
                         "1px EM grid + OPEN boundary: capped invisible pad (fixed pixel width)");
-                gameModel.SetEMBoundaryMode(EMBND_ABSORB);
+                gameModel.SetEMBoundaryMode(EMBND_OPEN);
                 gameModel.SetEMCellSize(EM_CELL_SIZE_DEFAULT);
                 // every geometry switch above reallocated the field and wiped the
                 // tool overrides; write one directly so the reset test below has
@@ -716,50 +661,105 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 }
                 Check(!anyOv, "clear_sim (new save) clears all EM overrides");
                 Check(leftoverCurrent == 0, "clear_sim drops all currents");
-                // --- task 3 setup: parked monopole + iron filings, no sources ---
-                int mono = sim->create_part(-1, 150, 100, PT_RMON); // N pole (ctype 0)
-                if (mono >= 0)
+                // --- superconductor rig: a cold SCPW grain falls past a vertical
+                // magnet column; the diamagnetic (Meissner) pressure pushes it
+                // AWAY from the stronger field, i.e. horizontally off its
+                // straight-down path. A control grain falls the same distance
+                // with no magnet nearby and drifts nowhere.
+                for (int y = 140; y < 300; ++y)
                 {
-                        sim->parts[mono].vx = 0;
-                        sim->parts[mono].vy = 0;
+                        for (int x = 140; x < 147; ++x)
+                        {
+                                sim->create_part(-1, x, y, PT_EMMGD);
+                        }
                 }
-                filingsX0 = 175.0f;
-                for (int x = 165; x <= 185; ++x) sim->create_part(-1, x, 104, PT_DMND); // shelf
-                for (int x = 170; x < 181; ++x) sim->create_part(-1, x, 100, PT_FEPW);
+                // catch floors: grains reaching the canvas bottom are deleted,
+                // so land them on thick diamond shelves instead (a 1 px shelf can
+                // be tunnelled through by a fast powder)
+                for (int x = 140; x < 320; ++x)
+                {
+                        for (int y = 343; y < 348; ++y) sim->create_part(-1, x, y, PT_DMND);
+                }
+                for (int x = 330; x < 460; ++x)
+                {
+                        for (int y = 343; y < 348; ++y) sim->create_part(-1, x, y, PT_DMND);
+                }
+                {
+                        int i = sim->create_part(-1, 152, 132, PT_SCPW);
+                        if (i >= 0)
+                        {
+                                sim->parts[i].temp = 4.0f;
+                                sim->parts[i].vx = 0;
+                                sim->parts[i].vy = 0;
+                        }
+                }
+                {
+                        int i = sim->create_part(-1, 392, 132, PT_SCPW);
+                        if (i >= 0)
+                        {
+                                sim->parts[i].temp = 4.0f;
+                                sim->parts[i].vx = 0;
+                                sim->parts[i].vy = 0;
+                        }
+                }
+                scTestY0 = 152.0f;  // reuse: test start x
+                scControlY0 = 392.0f; // control start x
                 sim->emf->enabled = true;
-                monoE0 = FieldEnergy(*sim->GetEMField());
                 break;
         }
         case 2180:
         {
-                // --- task 3 checks: radial static field, filings pulled in,
-                // and NO wave energy pumped by the static source ---
+                // --- superconductor checks: the cold grain that fell past the
+                // magnet column is deflected sideways; the control grain is not ---
                 auto *sim = gameModel.GetSimulation();
                 auto *emf = sim->GetEMField();
-                auto &c1 = emf->cells[emf->CellIndex(152, 100)]; // 1 cell out
-                std::cout << "[EMSELFTEST] info: monopole bstat at r=1: "
-                          << c1.bstatx << "," << c1.bstaty << std::endl;
-                Check(c1.bstatx > 0.7f && std::abs(c1.bstaty) < 0.2f,
-                        "parked monopole carries a radial static B field (task 3)");
-                auto &c3 = emf->cells[emf->CellIndex(156, 100)]; // 3 cells out
-                Check(c3.bstatx > 0.2f && c3.bstatx < 0.5f,
-                        "monopole static field decays like 1/r (task 3)");
-                // iron filings moved TOWARD the monopole
-                float best = 1e9f;
+                (void)emf;
+                float testX = 0, testN = 0, controlX = 0, controlN = 0;
                 for (int i = 0; i < sim->parts.active; ++i)
                 {
                         auto &pt = sim->parts.data[i];
-                        if (pt.type == PT_FEPW)
-                                best = std::min(best, pt.x);
+                        if (pt.type != PT_SCPW)
+                        {
+                                continue;
+                        }
+                        if (pt.x >= 147 && pt.x < 320)
+                        {
+                                testX += pt.x;
+                                testN += 1;
+                        }
+                        else if (pt.x >= 330 && pt.x < 460)
+                        {
+                                controlX += pt.x;
+                                controlN += 1;
+                        }
                 }
-                std::cout << "[EMSELFTEST] info: closest filing " << best << " (start 170)" << std::endl;
-                Check(best < filingsX0 - 0.3f,
-                        "iron filings are pulled toward a monopole like toward a magnet (task 3)");
-                double e = FieldEnergy(*emf);
-                std::cout << "[EMSELFTEST] info: wave energy with parked monopole " << e
-                          << " (start " << monoE0 << ")" << std::endl;
-                Check(e < monoE0 + 0.05,
-                        "a parked monopole does NOT pump energy into the wave state (task 3)");
+                if (testN > 0 && controlN > 0)
+                {
+                        testX /= testN;
+                        controlX /= controlN;
+                        float testD = testX - scTestY0;
+                        float controlD = controlX - scControlY0;
+                        std::cout << "[EMSELFTEST] info: SCPW past magnet x " << scTestY0 << " -> " << testX
+                                  << " (drift " << testD << "), control x " << scControlY0 << " -> " << controlX
+                                  << " (drift " << controlD << ")" << std::endl;
+                        Check(testD > 3.0f && testD > controlD + 2.0f,
+                                "cold superconductor powder is pushed away from a magnet (Meissner repulsion)");
+                }
+                else
+                {
+                        int shown = 0;
+                        for (int i = 0; i < sim->parts.active && shown < 12; ++i)
+                        {
+                                auto &pt = sim->parts.data[i];
+                                if (pt.type == PT_SCPW)
+                                {
+                                        std::cout << "[EMSELFTEST] info: SCPW at " << pt.x << "," << pt.y
+                                                  << " temp=" << pt.temp << std::endl;
+                                        shown++;
+                                }
+                        }
+                        Check(false, "superconductor powders survived the rig");
+                }
                 // --- task 6 setup: vanilla -> EMTX transmitter rig ---
                 // METL line sparked from its left end; EMTX watches its right end
                 for (int x = 212; x <= 230; ++x) sim->create_part(-1, x, 80, PT_METL);
@@ -905,24 +905,20 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
                 break;
         }
         }
-        // continuous interop observation between the setup (65) and the check (105):
-        // a real charge parked on vanilla metal must keep it sparked, and a live
-        // spark must inject current into the EM field
-        if (frame >= 66 && frame < 105)
+        // cryostat for the superconductor levitation rig (frames 2100..2179):
+        // an uncooled 4 K powder warms past Tc in about a second in the 295 K
+        // ambient (correct physics - real superconductors need a coolant bath),
+        // so the rig re-pins the temperature every frame to isolate the
+        // Meissner force from the thermal quench
+        if (frame >= 2100 && frame <= 2180)
         {
                 auto *sim = gameModel.GetSimulation();
-                auto *emf = sim->GetEMField();
-                for (int x = 300; x < 340; ++x)
+                for (int i = 0; i < sim->parts.active; ++i)
                 {
-                        unsigned r = sim->pmap[60][x];
-                        if (r && TYP(r) == PT_SPRK)
+                        auto &p = sim->parts.data[i];
+                        if (p.type == PT_SCPW)
                         {
-                                sawVanillaSpark = true;
-                                int gi = emf->CellIndex(x, 60);
-                                if (emf->cells[gi].jzext > 0.01)
-                                {
-                                        sawSparkFieldInject = true;
-                                }
+                                p.temp = 4.0f;
                         }
                 }
         }

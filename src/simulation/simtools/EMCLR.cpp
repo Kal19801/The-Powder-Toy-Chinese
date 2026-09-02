@@ -28,7 +28,7 @@ static int perform(SimTool *tool, Simulation * sim, Particle * cpart, int x, int
         }
         int gi = emf->CellIndex(x, y);
         auto &cell = emf->cells[gi];
-        bool changed = cell.ovMask || cell.jz != 0 || cell.jzext != 0 || cell.jmext != 0 ||
+        bool changed = cell.ovMask || cell.jz != 0 || cell.jzext != 0 ||
                        cell.az != 1e-10 || cell.dazdt != 1e-10 || cell.epos != 0;
         emf->VacuumCell(gi);
         return changed ? 1 : 0;

@@ -214,7 +214,7 @@ void OptionsController::SetEMCellSize(int cellSize)
         model->SetEMCellSize(cellSize);
 }
 
-void OptionsController::SetEMRegionScale(int regionScale)
+void OptionsController::SetEMRegionScale(float regionScale)
 {
         model->SetEMRegionScale(regionScale);
 }

@@ -453,12 +453,12 @@ void OptionsModel::SetEMCellSize(int cellSize)
         notifySettingsChanged();
 }
 
-int OptionsModel::GetEMRegionScale()
+float OptionsModel::GetEMRegionScale()
 {
         return gModel->GetEMRegionScale();
 }
 
-void OptionsModel::SetEMRegionScale(int regionScale)
+void OptionsModel::SetEMRegionScale(float regionScale)
 {
         gModel->SetEMRegionScale(regionScale);
         notifySettingsChanged();

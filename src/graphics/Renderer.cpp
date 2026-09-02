@@ -1219,10 +1219,9 @@ namespace
                                 continue;
                         }
                         int gi = (xi + emf.renderOffX) + emf.gw * (yi + emf.renderOffY);
-                        // total B = curl az + static monopole field, so field lines
-                        // radiate straight out of a placed monopole (task 3)
-                        double dx = emf.cells[gi - emf.gw].az - emf.cells[gi + emf.gw].az + emf.cells[gi].bstatx;
-                        double dy = emf.cells[gi + 1].az - emf.cells[gi - 1].az + emf.cells[gi].bstaty;
+                        // B = curl az
+                        double dx = emf.cells[gi - emf.gw].az - emf.cells[gi + emf.gw].az;
+                        double dy = emf.cells[gi + 1].az - emf.cells[gi - 1].az;
                         double dn = std::sqrt(dx * dx + dy * dy);
                         if (dn == 0)
                         {
@@ -1392,10 +1391,10 @@ void Renderer::draw_emfield()
                                 case EMVIEW_A:   dy = cell.az * .2; break;
                                 case EMVIEW_J:   dy = cell.jz + cell.jzext; break;
                                 case EMVIEW_BX:
-                                        dy = emf->cells[gi - gw].az - emf->cells[gi + gw].az + cell.bstatx;
+                                        dy = emf->cells[gi - gw].az - emf->cells[gi + gw].az;
                                         break;
                                 case EMVIEW_BY:
-                                        dy = -(emf->cells[gi + 1].az - emf->cells[gi - 1].az) + cell.bstaty;
+                                        dy = -(emf->cells[gi + 1].az - emf->cells[gi - 1].az);
                                         break;
                                 case EMVIEW_HX:
                                         dy = ((emf->cells[gi - gw].az - emf->cells[gi + gw].az) / cell.perm
@@ -1415,8 +1414,8 @@ void Renderer::draw_emfield()
                                         break;
                                 case EMVIEW_B_STRENGTH:
                                 {
-                                        double dx = emf->cells[gi - gw].az - emf->cells[gi + gw].az + cell.bstatx;
-                                        dy = emf->cells[gi + 1].az - emf->cells[gi - 1].az + cell.bstaty;
+                                        double dx = emf->cells[gi - gw].az - emf->cells[gi + gw].az;
+                                        dy = emf->cells[gi + 1].az - emf->cells[gi - 1].az;
                                         dy = std::sqrt(dx * dx + dy * dy);
                                         break;
                                 }
@@ -1536,11 +1535,9 @@ void Renderer::draw_emfield()
                                 switch (vv)
                                 {
                                 case EMVIEW_B:
-                                        // dynamic curl of az + the static field of
-                                        // placed monopoles (task 3): the B view shows
-                                        // the total field, radial lines and all
-                                        dx = emf->cells[gi - gw].az - emf->cells[gi + gw].az + cell.bstatx;
-                                        dy = emf->cells[gi + 1].az - emf->cells[gi - 1].az + cell.bstaty;
+                                        // B = curl az (dynamic field)
+                                        dx = emf->cells[gi - gw].az - emf->cells[gi + gw].az;
+                                        dy = emf->cells[gi + 1].az - emf->cells[gi - 1].az;
                                         break;
                                 case EMVIEW_H:
                                         dx = (emf->cells[gi - gw].az - emf->cells[gi + gw].az) / cell.perm -

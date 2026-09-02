@@ -183,7 +183,14 @@ GameModel::GameModel(GameView *newView):
                 emf->enabled = prefs.Get("Simulation.EMField.Enabled", false);
                 emf->SetCellSize(prefs.Get("Simulation.EMField.CellSize", EM_CELL_SIZE_DEFAULT));
                 emf->SetRegionScale(prefs.Get("Simulation.EMField.RegionScale", EM_REGION_SCALE_DEFAULT));
-                emf->SetBoundaryMode(prefs.Get("Simulation.EMField.Boundary", EMBND_DEFAULT));
+                // legacy prefs may still carry the removed 吸收 option (value 1);
+                // it behaved identically to OPEN, so migrate instead of clamping
+                int boundary = prefs.Get("Simulation.EMField.Boundary", EMBND_DEFAULT);
+                if (boundary == EMBND_LEGACY_ABSORB)
+                {
+                        boundary = EMBND_OPEN;
+                }
+                emf->SetBoundaryMode(boundary);
                 emf->sourceMode = prefs.Get("Simulation.EMField.SourceMode", EMSRC_DEFAULT);
                 if (emf->sourceMode < 0 || emf->sourceMode >= EMSRC_COUNT)
                 {
@@ -260,7 +267,7 @@ GameModel::~GameModel()
                         auto *emf = sim->emfOwner.get();
                         prefs.Set("Simulation.EMField.Enabled", emf->enabled);
                         prefs.Set("Simulation.EMField.CellSize", emf->cellSize);
-                        prefs.Set("Simulation.EMField.RegionScale", emf->regionScale);
+                        prefs.Set<float>("Simulation.EMField.RegionScale", emf->regionScale);
                         prefs.Set("Simulation.EMField.Boundary", emf->boundaryMode);
                         prefs.Set("Simulation.EMField.SourceMode", emf->sourceMode);
                         prefs.Set("Simulation.EMField.Frequency", emf->frequency);
@@ -485,12 +492,12 @@ void GameModel::SetEMCellSize(int cellSize)
         }
 }
 
-int GameModel::GetEMRegionScale() const
+float GameModel::GetEMRegionScale() const
 {
         return sim->emfOwner ? sim->emfOwner->regionScale : EM_REGION_SCALE_DEFAULT;
 }
 
-void GameModel::SetEMRegionScale(int regionScale)
+void GameModel::SetEMRegionScale(float regionScale)
 {
         if (sim->emfOwner)
         {

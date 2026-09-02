@@ -235,25 +235,6 @@ void SimulationData::init_can_move()
         can_move[PT_ELEC][PT_RSST] = 2;
         can_move[PT_ELEC][PT_RSSS] = 2;
 
-        // real zone charges (RPRO/RELC/RMON) pass through matter like photons so
-        // they can ride INSIDE the real-zone conductors instead of bouncing off
-        // their surface - that is what makes the rewritten current system conduct.
-        // Vanilla behaviour is untouched: only these three new elements change.
-        for (destinationType = 1; destinationType < PT_NUM; destinationType++)
-        {
-                int props = elements[destinationType].Properties;
-                if (props & TYPE_ENERGY)
-                        continue; // energy particles already overlap each other
-                if (destinationType == PT_STKM || destinationType == PT_STKM2 || destinationType == PT_FIGH)
-                        continue; // stickmen still block
-                if (destinationType == PT_VOID || destinationType == PT_PVOD || destinationType == PT_INVIS)
-                        continue; // state-dependent, keep the special case
-                if (destinationType == PT_EMBR)
-                        continue; // nothing moves through EMBR
-                can_move[PT_RPRO][destinationType] = 2;
-                can_move[PT_RELC][destinationType] = 2;
-                can_move[PT_RMON][destinationType] = 2;
-        }
 }
 
 const CustomGOLData *SimulationData::GetCustomGOLByRule(int rule) const

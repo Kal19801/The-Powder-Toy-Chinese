@@ -189,8 +189,8 @@ public:
         void SetEMEnabled(bool state);
         int GetEMCellSize() const;
         void SetEMCellSize(int cellSize);
-        int GetEMRegionScale() const;
-        void SetEMRegionScale(int regionScale);
+        float GetEMRegionScale() const;
+        void SetEMRegionScale(float regionScale);
         int GetEMBoundaryMode() const;
         void SetEMBoundaryMode(int boundaryMode);
         int GetEMSourceMode() const;

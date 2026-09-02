@@ -387,17 +387,24 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
         }, [this] {
                 c->SetEMCellSize(emCellSize->GetOption().second);
         });
+        // dropdown values are INDICES into EM_REGION_SCALES (the widget stores
+        // ints); the callback converts the index back to the actual scale
         emRegionScale = addDropDown(ByteString("电磁场区域大小").FromUtf8(), {
-                { ByteString("1x").FromUtf8(), 1 },
+                { ByteString("0.5x (半屏)").FromUtf8(), 0 },
+                { ByteString("1x (全屏)").FromUtf8(), 1 },
                 { ByteString("2x").FromUtf8(), 2 },
                 { ByteString("4x").FromUtf8(), 4 },
                 { ByteString("8x").FromUtf8(), 8 },
         }, [this] {
-                c->SetEMRegionScale(emRegionScale->GetOption().second);
+                int idx = emRegionScale->GetOption().second;
+                if (idx < 0 || idx >= EM_REGION_SCALE_COUNT)
+                {
+                        idx = 1;
+                }
+                c->SetEMRegionScale(EM_REGION_SCALES[idx]);
         });
         emBoundary = addDropDown(ByteString("电磁场边界条件").FromUtf8(), {
                 { ByteString("封闭").FromUtf8(), EMBND_CLOSED },
-                { ByteString("吸收").FromUtf8(), EMBND_ABSORB },
                 { ByteString("开放").FromUtf8(), EMBND_OPEN },
                 { ByteString("循环").FromUtf8(), EMBND_PERIODIC },
         }, [this] {
@@ -893,7 +900,8 @@ void OptionsView::NotifySettingsChanged(OptionsModel * sender)
         }
         if (emRegionScale)
         {
-                emRegionScale->SetOption(sender->GetEMRegionScale());
+                int idx = EmRegionScaleIndex(sender->GetEMRegionScale());
+                emRegionScale->SetOption(idx >= 0 ? idx : 1);
         }
         if (emBoundary)
         {

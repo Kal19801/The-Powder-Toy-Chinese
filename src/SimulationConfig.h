@@ -64,11 +64,26 @@ constexpr int EM_CELL_SIZE_DEFAULT = 2;
 // of the cell size. regionScale = 1 means the simulation domain equals the visible
 // canvas (XRES x YRES); 2/4/8 expand the domain beyond the visible canvas, so waves
 // can travel through (and partially into) the invisible padding before reaching the
-// boundary. This decouples "grid resolution" from "physical domain size" - shrinking
+// boundary; 0.5 SHRINKS the domain to the central half of the canvas (XRES/2 x
+// YRES/2), which cuts the cell count (and therefore the CPU cost) by 4x - the
+// outer canvas area simply has no EM field, as if the domain were a smaller box.
+// This decouples "grid resolution" from "physical domain size" - shrinking
 // the grid no longer implicitly enlarges the simulated region.
-constexpr int EM_REGION_SCALES[] = { 1, 2, 4, 8 };
+constexpr float EM_REGION_SCALES[] = { 0.5f, 1.0f, 2.0f, 4.0f, 8.0f };
 constexpr int EM_REGION_SCALE_COUNT = int(sizeof(EM_REGION_SCALES) / sizeof(EM_REGION_SCALES[0]));
-constexpr int EM_REGION_SCALE_DEFAULT = 1;
+constexpr float EM_REGION_SCALE_DEFAULT = 1.0f;
+// nearest valid region scale (used when loading prefs); -1 when not found
+inline int EmRegionScaleIndex(float regionScale)
+{
+        for (int i = 0; i < EM_REGION_SCALE_COUNT; ++i)
+        {
+                if (EM_REGION_SCALES[i] == regionScale)
+                {
+                        return i;
+                }
+        }
+        return -1;
+}
 
 //edge damping margin, in EM cells, scaled from the applet's fixed 20 cell margin at a 4px cell size
 constexpr int EM_MARGIN_AT_4 = 20;
@@ -150,58 +165,26 @@ constexpr float EM_PML_SIGMA     = 0.028f;
 constexpr float EM_PML_POWER     = 4.0f;
 
 // --- EM boundary conditions (设置 -> 电磁场边界条件) ---------------------------
+// NOTE: the numeric values are persisted in prefs, so they must not be renumbered.
+// The old EMBND_ABSORB = 1 (identical split-field PML as OPEN) was removed from
+// the UI; value 1 is migrated to OPEN when prefs are loaded (see GameModel).
 enum EmBoundaryMode
 {
         EMBND_CLOSED = 0,   // 封闭: perfectly conducting walls at the screen edge, full reflection
-        EMBND_ABSORB = 1,   // 吸收: split-field PML in the invisible padding band
         EMBND_OPEN   = 2,   // 开放: split-field PML, waves leave like in infinite space
         EMBND_PERIODIC = 3, // 循环: waves leaving one edge re-enter from the opposite edge (ghost ring)
         EMBND_COUNT,
 };
 constexpr int EMBND_DEFAULT = EMBND_OPEN;
+// legacy pref value of the removed 吸收 option (behaviourally identical to OPEN)
+constexpr int EMBND_LEGACY_ABSORB = 1;
 
-// conduction drift: real charges inside real-zone conductors are carried along
-// the wire by the local field (see EMField::InteractParticles); peak drift speed
-// in px per frame at full conductivity, clamped to the field propagation speed
-constexpr float EM_DRIFT_SPEED = 0.35f;
-// field-energy contrast over which the drift dead-band releases (keeps charges
-// from jittering on numerical noise inside an idle wire)
-constexpr float EM_DRIFT_NOISE = 1e-6f;
-
-// --- rewritten current system (real zone), extending EMWave2 -------------------
-// current injected per EM cell by a real charge crossing it, in units of
-// charge * velocity; a moving point charge is a current density J = q v delta(x)
-constexpr float EM_CHARGE_CURRENT = 0.06f;
-// magnetic current injected by a moving monopole (drives dazdt directly,
-// symmetric to how jz drives the electric wave equation)
-constexpr float EM_MONO_CURRENT   = 0.06f;
-// static radial magnetic field of a placed magnetic monopole, in the same
-// per-cell units as a painted EMMG magnet (mx/my = +-1): B = g * EM_MONO_FIELD
-// * r_hat / r_cells, i.e. strength 1 at one cell distance, decaying like 1/r.
-// This is a true static superposed field (task 3), NOT a wave-equation source,
-// so it carries no energy and never pumps the simulation.
-constexpr float EM_MONO_FIELD        = 1.0f;
-constexpr float EM_MONO_FIELD_RADIUS = 160; // contribution radius in cells
-// z-quiver of real charges (the REAL Lorentz force, task 2 supplement): the TM
-// field's electric component Ez = -daz/dt is out of plane. Each charge carries
-// an out-of-plane quiver velocity vz driven by Ez; vz crossed with the IN-PLANE
-// B gives a real in-plane force F = q vz x B - the physically correct in-plane
-// coupling available in TM mode (radiation-pressure mechanism). The old
-// implementation faked this by treating |B| as a perpendicular Bz.
-constexpr float EM_EZ_FORCE        = 0.00035f; // Ez -> dvz coupling per sub-step
-constexpr float EM_VZ_DAMP         = 0.04f;    // quiver decay per sub-step
-constexpr float EM_LORENTZ_FORCE   = 0.004f;   // F = q * vz x B in-plane gain
 // Motor effect (Lorentz force on a current): the bulk force density on a
 // current-carrying conductor is F = j x B. For our 2D TM field with j = (0,0,jz)
 // and B = (Bx,By,0), this gives F = (-jz*By, jz*Bx, 0) - a real, in-plane force
 // on the conductor. Gain scales the force so a visible motion results at the
 // magnitudes of j and B the simulation typically produces.
 constexpr float EM_MOTOR_FORCE     = 0.020f;
-// Coulomb-like pairwise force between real charges at short range (softened);
-// both charges share the electron's inertia (task 2: motion like vanilla ELEC)
-constexpr float EM_COULOMB        = 0.0045f;
-// force of the in-plane B field (B = curl az) on a magnetic monopole, F = g B
-constexpr float EM_MONOPOLE_FORCE = 0.05f;
 // magnetic pressure on ferromagnetic / diamagnetic powders (iron filings vs
 // pyrolytic graphite); sign chosen by permeability below/above 1. Tuned against
 // powder gravity (~0.4 px/frame^2) so the pull of a magnet clearly wins close by
@@ -211,12 +194,16 @@ constexpr float EM_POWDER_NORM    = 0.30f;
 // same mechanism, much milder, for solid magnetic materials (FE/PGRF/EMFM/EMDM):
 // blocks slowly slide instead of jumping, powders are the strong responders
 constexpr float EM_SOLID_FORCE    = 0.08f;
-// pairwise Coulomb is O(n^2); above this many real particles only the field
-// coupling is applied (still fully functional, just without charge-charge force)
-constexpr int   EM_PAIRWISE_LIMIT = 400;
 // superconductor critical temperature (YBCO-ish); above it the material
 // quenches to a mere fair conductor and stops expelling the B field
 constexpr float EM_SC_TC          = 93.0f;
+// permeability a superconductor maps to below Tc (the applet's diamagnet
+// value); it makes the superconductor repel the field (magnetic pressure)
+// the same way a painted diamagnet does, on top of its perfect conductivity
+constexpr float EM_SC_PERM        = 0.5f;
+// conductivity a quenched superconductor falls back to (between the applet's
+// fair .5 and a lossy wire; high enough to screen, low enough to dissipate)
+constexpr float EM_SC_QUENCH_CONDUCT = 0.3f;
 // EMTX transmitter defaults (task 6): burst = Hann-windowed 2 carrier cycles
 constexpr int   EMTX_BURST_MIN_FRAMES = 6;
 constexpr int   EMTX_BURST_MAX_FRAMES = 600;

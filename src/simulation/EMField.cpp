@@ -143,7 +143,7 @@ void EMField::SetCellSize(int newCellSize)
         ApplyGridGeometry();
 }
 
-void EMField::SetRegionScale(int newScale)
+void EMField::SetRegionScale(float newScale)
 {
         bool valid = false;
         for (int i = 0; i < EM_REGION_SCALE_COUNT; ++i)
@@ -197,22 +197,30 @@ void EMField::ApplyGridGeometry()
         // the same pixel speed and pixel wavelength at every resolution (task 7)
         taddEff = EmWaveTadd(cellSize);
         // total simulated cells (the domain); region > 1 means this extends past
-        // the visible canvas in every direction
-        visW = std::max(8, (XRES * regionScale) / cellSize);
-        visH = std::max(8, (YRES * regionScale) / cellSize);
+        // the visible canvas in every direction, region < 1 means it covers only
+        // the central part of the canvas
+        visW = std::max(8, int(float(XRES) * regionScale) / cellSize);
+        visH = std::max(8, int(float(YRES) * regionScale) / cellSize);
         padL = 0;
         padT = 0;
         margin = 0;
         switch (boundaryMode)
         {
         case EMBND_OPEN:
-        case EMBND_ABSORB:
         {
                 // absorber band OUTSIDE the simulation domain (invisible
                 // padding), fixed thickness in pixels. With regionScale > 1 the
                 // band is added on top of the already-oversized domain, so the
-                // visible canvas stays bare.
+                // visible canvas stays bare. With regionScale < 1 the domain is
+                // smaller than the canvas, so the band is capped to a quarter
+                // of the domain to keep most of it usable (regionScale >= 1
+                // keeps the exact original band width).
                 int pad = std::clamp(EM_PAD_PX / cellSize, EM_PAD_MIN_CELLS, EM_PAD_MAX_CELLS);
+                if (regionScale < 1.0f)
+                {
+                        pad = std::min(pad, std::min(visW, visH) / 4);
+                        pad = std::max(pad, 2);
+                }
                 padL = pad;
                 padT = pad;
                 margin = pad;
@@ -226,20 +234,29 @@ void EMField::ApplyGridGeometry()
                 break;
         }
         // guard against extreme regionScale+cellSize combinations exhausting memory
-        while ((long long)(visW + 2 * padL) * (visH + 2 * padT) > EM_MAX_CELLS && regionScale > 1)
+        while ((long long)(visW + 2 * padL) * (visH + 2 * padT) > EM_MAX_CELLS && regionScale > EM_REGION_SCALES[0])
         {
-                regionScale /= 2;
-                visW = std::max(8, (XRES * regionScale) / cellSize);
-                visH = std::max(8, (YRES * regionScale) / cellSize);
-                EMF_DBG("EMField: region scale reduced to %dx to fit the cell budget\n", regionScale);
+                // step down to the next smaller valid scale
+                float next = EM_REGION_SCALES[0];
+                for (int i = 0; i + 1 < EM_REGION_SCALE_COUNT; ++i)
+                {
+                        if (EM_REGION_SCALES[i] < regionScale && EM_REGION_SCALES[i] > next)
+                        {
+                                next = EM_REGION_SCALES[i];
+                        }
+                }
+                regionScale = next;
+                visW = std::max(8, int(float(XRES) * regionScale) / cellSize);
+                visH = std::max(8, int(float(YRES) * regionScale) / cellSize);
+                EMF_DBG("EMField: region scale reduced to %gx to fit the cell budget\n", double(regionScale));
         }
         gw = visW + 2 * padL;
         gh = visH + 2 * padT;
         cells.assign(gw * gh, Cell{});
-        // split-field PML arrays (task 8): only the OPEN / ABSORB modes have a
+        // split-field PML arrays (task 8): only the OPEN mode has a
         // band; the split fields start at zero so ux = az - uy stays consistent
         // with the applet's 1e-10 seed in az
-        if (boundaryMode == EMBND_OPEN || boundaryMode == EMBND_ABSORB)
+        if (boundaryMode == EMBND_OPEN)
         {
                 pmlUy.assign(gw * gh, 0.0f);
                 pmlWy.assign(gw * gh, 0.0f);
@@ -251,21 +268,22 @@ void EMField::ApplyGridGeometry()
                 pmlWy.clear();
                 pmlWy.shrink_to_fit();
         }
-        // visible canvas is always centred on the simulation domain
+        // visible canvas is always centred on the simulation domain; with
+        // regionScale < 1 the offset goes NEGATIVE (the domain is smaller than
+        // the canvas) - that is intentional and handled via the domain-bounds
+        // checks in CellIndex/PixelInDomain and the renderer
         int visCanvasW = XRES / cellSize; // cells of the visible canvas
         int visCanvasH = YRES / cellSize;
         renderOffX = padL + (visW - visCanvasW) / 2;
         renderOffY = padT + (visH - visCanvasH) / 2;
-        if (renderOffX < padL) renderOffX = padL;
-        if (renderOffY < padT) renderOffY = padT;
         forceBarValue = frequency;
         forceTimeZero = 0;
         t = 0;
         filterCount = 0;
         SetupSources();
         SetDamping();
-        EMF_DBG("EMField: grid %dx%d cells (cell %dpx, region %dx, boundary %d, pad %d, vis %dx%d, margin %d, renderOff %d,%d)\n",
-                gw, gh, cellSize, regionScale, boundaryMode, padL, visW, visH, margin, renderOffX, renderOffY);
+        EMF_DBG("EMField: grid %dx%d cells (cell %dpx, region %g, boundary %d, pad %d, vis %dx%d, margin %d, renderOff %d,%d)\n",
+                gw, gh, cellSize, double(regionScale), boundaryMode, padL, visW, visH, margin, renderOffX, renderOffY);
 }
 
 void EMField::NotifyCellChanged()
@@ -289,7 +307,6 @@ void EMField::Clear()
                 cell.epos = 0;
                 cell.jz = 0;
                 cell.jzext = 0;
-                cell.jmext = 0;
                 if (cell.resonant)
                 {
                         cell.jz = 0;
@@ -355,7 +372,6 @@ void EMField::VacuumCell(int gi)
         auto &cell = cells[gi];
         cell.jz = 0;
         cell.jzext = 0;
-        cell.jmext = 0;
         cell.az = 1e-10;
         cell.dazdt = 1e-10;
         cell.epos = 0;
@@ -367,10 +383,22 @@ int EMField::CellIndex(int px, int py) const
         // simulation domain. With regionScale > 1 the simulation extends beyond
         // the visible canvas, so the cell offset is renderOffX/Y (centred on
         // the domain); with regionScale = 1 renderOffX == padL so this reduces
-        // to the previous behaviour.
+        // to the plain pixel -> cell mapping; with regionScale < 1 pixels
+        // outside the domain clamp onto the nearest domain edge cell.
         int cx = std::clamp(px / cellSize, 0, XRES / cellSize - 1) + renderOffX;
         int cy = std::clamp(py / cellSize, 0, YRES / cellSize - 1) + renderOffY;
+        cx = std::clamp(cx, padL, padL + visW - 1);
+        cy = std::clamp(cy, padT, padT + visH - 1);
         return cx + cy * gw;
+}
+
+bool EMField::PixelInDomain(int px, int py) const
+{
+        // unclamped inverse of CellIndex: out-of-domain pixels must NOT inject
+        // material into the field (with regionScale < 1 they simply have none)
+        int cx = px / cellSize + renderOffX;
+        int cy = py / cellSize + renderOffY;
+        return cx >= padL && cx < padL + visW && cy >= padT && cy < padT + visH;
 }
 
 // material type classification, faithful port of the applet's OscElement::getType();
@@ -396,7 +424,6 @@ int EMField::CellTypeOf(const Cell &oe)
 void EMField::SyncMaterials()
 {
         emwSources.clear();
-        monoSources.clear();
         for (auto &cell : cells)
         {
                 cell.perm = 1;
@@ -405,7 +432,6 @@ void EMField::SyncMaterials()
                 cell.my = 0;
                 cell.medium = 0;
                 cell.jzext = 0;
-                cell.jmext = 0;
                 cell.resonant = false;
                 cell.heatable = false;
                 cell.magpowder = false;
@@ -424,6 +450,10 @@ void EMField::SyncMaterials()
                 {
                         // EMW: user-placeable EM source. .tmp overrides the global frequency,
                         // .ctype selects the waveform (0 = sine, 1 = packet).
+                        if (!PixelInDomain(int(p.x), int(p.y)))
+                        {
+                                continue; // outside the simulated region (regionScale < 1)
+                        }
                         float freq = frequency;
                         if (p.tmp >= 1 && p.tmp <= 40)
                         {
@@ -435,9 +465,12 @@ void EMField::SyncMaterials()
                 }
                 if (p.type == PT_EMR)
                 {
-                        auto &cell = cells[CellIndex(int(p.x), int(p.y))];
-                        cell.resonant = true;
-                        cell.heatable = true; // resonant media dissipate absorbed energy
+                        if (PixelInDomain(int(p.x), int(p.y)))
+                        {
+                                auto &cell = cells[CellIndex(int(p.x), int(p.y))];
+                                cell.resonant = true;
+                                cell.heatable = true; // resonant media dissipate absorbed energy
+                        }
                         continue;
                 }
                 // --- vanilla SPRK no longer excites the EM field -------------------
@@ -456,6 +489,11 @@ void EMField::SyncMaterials()
                 // EMJP/EMJN current source next to the conductor.
                 // permanent magnets: the four dedicated direction elements, plus the
                 // legacy EMMG element (.ctype 0..3) kept working for old saves
+                if (!PixelInDomain(int(p.x), int(p.y)))
+                {
+                        // outside the simulated region (regionScale < 1): inert
+                        continue;
+                }
                 switch (p.type)
                 {
                 case PT_EMMGD:
@@ -487,43 +525,30 @@ void EMField::SyncMaterials()
                 }
                 // superconductors are temperature dependent: below the critical
                 // temperature they are perfect conductors that expel the B field
-                // (Meissner effect), above it they quench to a fair conductor
+                // (Meissner effect), above it they quench to a fair conductor.
+                // The mapping is ORDER-INDEPENDENT (deterministic even when several
+                // particles share one cell, e.g. on coarse grids): conductivity
+                // takes the maximum, permeability the minimum (the diamagnetic
+                // Meissner response may only pull perm DOWN, never overwrite a
+                // stronger ferromagnet), and the force flags accumulate.
                 if (p.type == PT_SCND || p.type == PT_SCPW)
                 {
                         auto &cell = cells[CellIndex(int(p.x), int(p.y))];
                         if (p.temp < EM_SC_TC)
                         {
                                 cell.conductivity = std::max(cell.conductivity, 1.0f);
-                                cell.perm = ClampPerm(0.5f, PermMax()); // Meissner: B expelled
-                                cell.heatable = false;
-                                cell.magpowder = (p.type == PT_SCPW); // levitates over magnets
-                                cell.magsolid = (p.type == PT_SCND);  // solid Meissner body, mild push
+                                cell.perm = ClampPerm(std::min(cell.perm, EM_SC_PERM), PermMax());
+                                cell.heatable = cell.heatable && false; // cold SC never heats
+                                cell.magpowder = cell.magpowder || (p.type == PT_SCPW); // levitates over magnets
+                                cell.magsolid = cell.magsolid || (p.type == PT_SCND);   // solid Meissner body, mild push
                         }
                         else
                         {
-                                cell.conductivity = std::max(cell.conductivity, 0.3f);
-                                cell.perm = 1;
+                                // quenched: resists again and dissipates; perm left
+                                // as-is so a shared cell keeps its other materials
+                                cell.conductivity = std::max(cell.conductivity, EM_SC_QUENCH_CONDUCT);
                                 cell.heatable = true;
                         }
-                        continue;
-                }
-                // --- Task 3: magnetic monopole carries a true static field ------
-                // The monopole's field is computed analytically in
-                // ComputeStaticB() as a radial B = g*K*r̂/r superposed on the
-                // dynamic field (and deliberately kept OUT of the wave
-                // equation: Maxwell is linear, so a static field does not
-                // scatter waves, and a static source must not pump energy into
-                // the wave state). Moving monopoles also deposit a jmext along
-                // their path via DepositRealCharges() - that part radiates,
-                // exactly as a moving magnetic charge should.
-                if (p.type == PT_RMON)
-                {
-                        float sign = (p.ctype == 1) ? -1.0f : 1.0f;
-                        // grid coordinates (including the render offset - with an
-                        // outflow boundary the visible canvas sits at renderOffX/Y
-                        // inside the padded grid)
-                        int gi = CellIndex(int(p.x), int(p.y));
-                        monoSources.push_back({ gi % gw, gi / gw, sign });
                         continue;
                 }
                 // --- Task 5: EMAN antenna reads neighbour excitation and sparks ---
@@ -550,7 +575,7 @@ void EMField::SyncMaterials()
                 // ever sees it.
                 if (p.type == PT_EMTX)
                 {
-                        if (p.tmp > 0)
+                        if (p.tmp > 0 && PixelInDomain(int(p.x), int(p.y)))
                         {
                                 // burst envelope: smooth Hann window over the
                                 // remaining burst frames
@@ -579,9 +604,9 @@ void EMField::SyncMaterials()
                 // can drive it, mirroring the way BTRY drives a vanilla circuit.
                 if (p.type == PT_EMJC)
                 {
-                        auto &cell = cells[CellIndex(int(p.x), int(p.y))];
-                        if (p.life > 0)
+                        if (p.life > 0 && PixelInDomain(int(p.x), int(p.y)))
                         {
+                        auto &cell = cells[CellIndex(int(p.x), int(p.y))];
                                 float j = std::clamp(p.tmp / 100.0f, -EM_JZEXT_MAX, EM_JZEXT_MAX);
                                 if (j == 0.0f)
                                 {
@@ -596,6 +621,10 @@ void EMField::SyncMaterials()
                         if (mat.type != p.type)
                         {
                                 continue;
+                        }
+                        if (!PixelInDomain(int(p.x), int(p.y)))
+                        {
+                                break; // outside the simulated region: inert
                         }
                         auto &cell = cells[CellIndex(int(p.x), int(p.y))];
                         if (mat.source)
@@ -721,74 +750,6 @@ void EMField::SyncMaterials()
         CalcBoundaries();
 }
 
-// --- task 3: static field of placed magnetic monopoles ------------------------
-// A magnetic monopole at rest carries a radial magnetic field
-//     B(r) = g * EM_MONO_FIELD * r_hat / r_cells
-// exactly like the 2D Coulomb field of an electric charge, with |B| = 1 at one
-// cell distance - the same order as the near field of a painted EMMG magnet
-// (mx/my = +-1). The contribution is capped at EM_MONO_FIELD_RADIUS cells with a
-// smooth fade so the per-monopole work stays bounded; beyond that the 1/r field
-// is far below every threshold the simulation uses. The field is REBUILT every
-// frame (monopoles move), superposed into cell.bstatx/bstaty, and deliberately
-// kept OUT of the wave equation: Maxwell's equations are linear, so the static
-// field does not scatter waves, and keeping it out of the dynamic state is what
-// makes it truly static (a wave-equation source would pump energy forever).
-void EMField::ComputeStaticB()
-{
-        if (monoSources.empty())
-        {
-                // fast path: no monopoles, just clear the previous frame's field
-                for (auto &cell : cells)
-                {
-                        if (cell.bstatx != 0 || cell.bstaty != 0)
-                        {
-                                cell.bstatx = 0;
-                                cell.bstaty = 0;
-                        }
-                }
-                return;
-        }
-        for (auto &cell : cells)
-        {
-                cell.bstatx = 0;
-                cell.bstaty = 0;
-        }
-        int R = EM_MONO_FIELD_RADIUS;
-        for (const auto &ms : monoSources)
-        {
-                int x0 = std::max(1, ms.cx - R);
-                int x1 = std::min(gw - 1, ms.cx + R);
-                int y0 = std::max(1, ms.cy - R);
-                int y1 = std::min(gh - 1, ms.cy + R);
-                for (int cy = y0; cy < y1; cy++)
-                {
-                        for (int cx = x0; cx < x1; cx++)
-                        {
-                                float dx = float(cx - ms.cx);
-                                float dy = float(cy - ms.cy);
-                                float r = std::sqrt(dx * dx + dy * dy);
-                                if (r < 0.5f)
-                                {
-                                        continue; // the monopole's own cell: no self-force
-                                }
-                                float b = ms.sign * EM_MONO_FIELD / r;
-                                // smooth fade over the outer 20% of the radius so
-                                // the truncation never creates a visible ring
-                                float fade = 1.0f;
-                                if (r > 0.8f * R)
-                                {
-                                        float s = (r - 0.8f * R) / (0.2f * R);
-                                        fade = 1.0f - s * s;
-                                }
-                                b *= fade;
-                                auto &cell = cells[cx + cy * gw];
-                                cell.bstatx += b * dx / r;
-                                cell.bstaty += b * dy / r;
-                        }
-                }
-        }
-}
-
 void EMField::CalcBoundaries()
 {
         // Mark all cells where the permeability, medium, magnetization or resonance
@@ -845,7 +806,7 @@ void EMField::SetDamping()
         // speed/wavelength decoupling.
         pmlBX.assign(gw, 1.0f);
         pmlBY.assign(gh, 1.0f);
-        if (boundaryMode == EMBND_ABSORB || boundaryMode == EMBND_OPEN)
+        if (boundaryMode == EMBND_OPEN)
         {
                 float sigTau = EM_PML_SIGMA * taddEff / EM_TADD_SUB;
                 int D = std::max(2, padL);
@@ -1129,7 +1090,7 @@ void EMField::FilterGrid()
                 {
                         int gi = x + y * gw;
                         auto &oe = cells[gi];
-                        if (oe.jz != 0 || oe.jzext != 0 || oe.jmext != 0 || oe.conductivity > 0)
+                        if (oe.jz != 0 || oe.jzext != 0 || oe.conductivity > 0)
                         {
                                 continue;
                         }
@@ -1152,344 +1113,101 @@ void EMField::FilterGrid()
         }
 }
 
-// --- rewritten current system ------------------------------------------------
-
-// Gather all real charged particles into flat lists; called once per frame
-// before the wave sub-steps.
-void EMField::CollectRealCharges()
-{
-        realCharges.clear();
-        realChargeCount = 0;
-        auto &parts = sim.parts;
-        for (int i = 0; i < parts.active; ++i)
-        {
-                auto &p = parts.data[i];
-                float q = 0, g = 0, mass = 1;
-                switch (p.type)
-                {
-                case PT_RPRO: q =  1;  break; // task 2: same inertia as ELEC
-                case PT_RELC: q = -1;  break;
-                case PT_RMON: g = (p.ctype == 1) ? -1 : 1; break;
-                default:      continue;
-                }
-                realChargeCount++;
-                if (realCharges.size() < size_t(EM_PAIRWISE_LIMIT))
-                {
-                        // pairwise Coulomb only tracks a bounded number of charges
-                        realCharges.push_back({ i, q, g, mass, 0, p.x, p.y, p.vx, p.vy });
-                }
-        }
-        for (auto &rc : realCharges)
-        {
-                rc.gi = CellIndex(int(rc.x), int(rc.y));
-        }
-}
-
-// Deposit the current of every real charge into the cells along the path it
-// will travel this frame; a moving point charge IS a current density
-// J = q v delta(x), and distributing it over the traversed cells keeps the
-// deposit inside the light cone of the field (nothing is skipped).
-void EMField::DepositRealCharges()
-{
-        float vmax = MaxParticleSpeed();
-        for (const auto &rc : realCharges)
-        {
-                float vx = std::clamp(rc.vx, -vmax, vmax);
-                float vy = std::clamp(rc.vy, -vmax, vmax);
-                float speed = std::sqrt(vx * vx + vy * vy);
-                if (speed < 1e-3f)
-                {
-                        continue; // a parked charge carries no current
-                }
-                // predicted pixel path of this frame
-                float steps = std::max(1.0f, speed); // one sample per pixel
-                int npath = 0;
-                int pathGis[512];
-                float px = rc.x, py = rc.y;
-                float dx = vx / steps, dy = vy / steps;
-                for (float s = 0; s < steps && npath < 512; s += 1.0f)
-                {
-                        int gi = CellIndex(int(px + dx * s), int(py + dy * s));
-                        if (npath == 0 || pathGis[npath - 1] != gi)
-                        {
-                                pathGis[npath++] = gi;
-                        }
-                }
-                float mag = speed / cellSize * EM_CHARGE_CURRENT / float(npath);
-                for (int k = 0; k < npath; k++)
-                {
-                        auto &cell = cells[pathGis[k]];
-                        if (rc.q != 0)
-                        {
-                                cell.jzext += rc.q * mag;
-                        }
-                        if (rc.g != 0)
-                        {
-                                // magnetic current drives dazdt directly, the dual of
-                                // how the electric current jz drives the wave equation
-                                cell.jmext += rc.g * speed / cellSize * EM_MONO_CURRENT / float(npath);
-                        }
-                }
-        }
-        // clamp the injected currents; the field can only carry a bounded amount
-        // of energy per step and an over-injected cell is the fastest runaway
-        for (auto &cell : cells)
-        {
-                if (cell.jzext > EM_JZEXT_MAX)
-                {
-                        cell.jzext = EM_JZEXT_MAX;
-#if EMFIELD_DEBUG
-                        jzClampHits++;
-#endif
-                }
-                else if (cell.jzext < -EM_JZEXT_MAX)
-                {
-                        cell.jzext = -EM_JZEXT_MAX;
-#if EMFIELD_DEBUG
-                        jzClampHits++;
-#endif
-                }
-        }
-}
-
-void EMField::InteractParticles(int substep, int substeps)
+// Once per frame, after the wave sub-steps: the force and heating couplings
+// between the field and the matter inside it. All of these act on the CELL
+// materials (never on individual charges - the real-zone charge carriers were
+// removed from the mod), so a single pass over the domain is enough:
+//  * magnetic pressure on ferromagnetic / diamagnetic powders (iron filings
+//    pull toward magnets, pyrolytic graphite and superconductors are pushed
+//    away) and the much milder version for solid magnetic materials;
+//  * the motor effect (j x B force on current-carrying conductors);
+//  * Joule heating of resistive real-zone conductors (superconductors below
+//    Tc have no resistance and never heat up).
+void EMField::ApplyFieldForces(int substeps)
 {
         auto &parts = sim.parts;
-        float vmax = MaxParticleSpeed();
-        // the in-plane coupling gains are normalised so the SAME physical field
-        // produces the same force at every cell size: the wave state's velocity
-        // dazdt scales with 1/taddEff^2 and the per-cell curl with 1/cellSize
-        float velNorm = (taddEff / EM_TADD_SUB) * (taddEff / EM_TADD_SUB);
-        float cellNorm = 1.0f / float(cellSize);
-        // forces are integrated per sub-step so that a sub-step of the particle
-        // motion always stays inside a sub-step of the field propagation;
-        // every real particle in the simulation gets the field forces, while the
-        // pairwise Coulomb acts between the tracked charges only (bounded work)
-        for (int i = 0; i < parts.active; ++i)
+        (void)parts;
+        for (int cy = 1; cy < gh - 1; cy++)
         {
-                auto &p = parts.data[i];
-                float q = 0, g = 0, mass = 1;
-                switch (p.type)
+                for (int cx = 1; cx < gw - 1; cx++)
                 {
-                case PT_RPRO: q =  1; break;
-                case PT_RELC: q = -1; break;
-                case PT_RMON: g = (p.ctype == 1) ? -1 : 1; break;
-                default:      continue;
-                }
-                int gi = CellIndex(int(p.x), int(p.y));
-                int cx = gi % gw;
-                int cy = gi / gw;
-                if (cx < 1 || cx >= gw - 1 || cy < 1 || cy >= gh - 1)
-                {
-                        continue;
-                }
-                auto &cell = cells[gi];
-                double fx = 0, fy = 0;
-                // in-plane magnetic field at this cell: B = curl az (per-cell
-                // curl of the dynamic field) plus the static superposed field of
-                // any placed monopoles (task 3)
-                double bx = (cells[gi + gw].az - cells[gi - gw].az) * 0.5 + cell.bstatx;
-                double by = (cells[gi - 1].az - cells[gi + 1].az) * 0.5 + cell.bstaty;
-                if (q != 0)
-                {
-                        // --- the REAL Lorentz force available in 2D TM mode ----
-                        // The TM field's electric component is Ez = -d(az)/dt,
-                        // OUT of the plane, so a charge in the plane quivers out
-                        // of plane with vz driven by Ez. That quiver velocity
-                        // crossed with the IN-PLANE B gives a real in-plane
-                        // force F = q vz x B = q vz (By, -Bx) - the genuine
-                        // radiation-pressure coupling of the simulated field
-                        // (the previous implementation instead faked it by
-                        // treating |B| as a perpendicular Bz). vz persists in
-                        // the particle's .tmp (bit-cast) so it survives frames
-                        // and saves; a mild damping stands in for the out-of-
-                        // plane radiation the 2D world cannot carry.
-                        float vz;
-                        std::memcpy(&vz, &p.tmp, sizeof(vz));
-                        if (!std::isfinite(vz))
-                        {
-                                vz = 0;
-                        }
-                        double ez = -double(cells[gi].dazdt) * velNorm; // E_z, physical
-                        vz += float(q * ez * EM_EZ_FORCE);
-                        vz *= (1.0f - EM_VZ_DAMP);
-                        std::memcpy(&p.tmp, &vz, sizeof(vz));
-                        fx += q * double(vz) * by * cellNorm * EM_LORENTZ_FORCE;
-                        fy -= q * double(vz) * bx * cellNorm * EM_LORENTZ_FORCE;
-                }
-                // magnetic monopoles feel the in-plane B field directly: F = g B
-                if (g != 0)
-                {
-                        fx += g * bx * cellNorm * EM_MONOPOLE_FORCE;
-                        fy += g * by * cellNorm * EM_MONOPOLE_FORCE;
-                }
-                p.vx += float(fx / mass) * EM_TADD_SUB * 4.0f / float(substeps);
-                p.vy += float(fy / mass) * EM_TADD_SUB * 4.0f / float(substeps);
-                // strict speed of light: no particle may outrun the field, that is
-                // the core anti-divergence invariant of the whole current system
-                float sp = std::sqrt(p.vx * p.vx + p.vy * p.vy);
-                if (sp > vmax)
-                {
-                        p.vx *= vmax / sp;
-                        p.vy *= vmax / sp;
-                }
-                // conduction drift: inside a real-zone conductor the charge is
-                // carried ALONG the wire by the local current, the EMWave2 jz
-                // mechanism made directional. This is what makes our current
-                // actually conduct: a charge entering one end of a copper wire
-                // slides along it instead of rattling in place, and reaches the
-                // other end where it can meet an opposite carrier or hand the
-                // current over to a vanilla circuit. Monopoles do not ride wires.
-                if (q != 0 && cells[gi].conductivity > 0)
-                {
+                        int gi = cx + cy * gw;
                         auto &cell = cells[gi];
-                        // local wire tangent from conductor occupancy of the 4-neighbourhood
-                        int cl = cells[gi - 1].conductivity > 0;
-                        int cr = cells[gi + 1].conductivity > 0;
-                        int cu = cells[gi - gw].conductivity > 0;
-                        int cd = cells[gi + gw].conductivity > 0;
-                        float tx = 0, ty = 0;
-                        if (cl && cr) tx = 1;
-                        else if (cu && cd) ty = 1;
-                        else if (cl) tx = -1;
-                        else if (cr) tx = 1;
-                        else if (cu) ty = -1;
-                        else if (cd) ty = 1;
-                        if (tx != 0 || ty != 0)
+                        // pixel position of this cell on the visible canvas:
+                        // the visible canvas is centred on the simulation
+                        // domain, so cell (cx,cy) maps to pixel
+                        // ((cx - renderOffX) * cs, (cy - renderOffY) * cs).
+                        // With regionScale < 1 renderOffX/Y are negative and
+                        // the px0 bounds check below skips everything that
+                        // maps outside the canvas.
+                        int px0 = (cx - renderOffX) * cellSize;
+                        int py0 = (cy - renderOffY) * cellSize;
+                        if (px0 < 0 || py0 < 0 || px0 >= XRES || py0 >= YRES)
                         {
-                                // drive 1 (preferred): the field-intensity gradient along the
-                                // wire - carriers are dragged away from the strong field side,
-                                // i.e. away from whatever feeds the wire. Three intensities are
-                                // summed because each carries the information in a different
-                                // regime: |E|^2 (vacuum / weak conductors), |B|^2 (B penetrates
-                                // conductors where E is screened) and the wire's own induced
-                                // |jz|^2 (strongest right where the wire is fed). All three are
-                                // sign-less so the direction stays steady for AC, DC and ringing.
-                                double eL = cells[gi - 1].dazdt, eR = cells[gi + 1].dazdt;
-                                double eU = cells[gi - gw].dazdt, eD = cells[gi + gw].dazdt;
+                                continue; // cell outside the visible canvas
+                        }
+                        if (cell.magpowder || cell.magsolid)
+                        {
+                                // |B|^2 of the dynamic field: iron filings must respond to a
+                                // magnet exactly like the applet diamagnet/ferromagnet pair
                                 auto b2f = [this](int gg) {
                                         double dx = cells[gg - gw].az - cells[gg + gw].az;
                                         double dy = cells[gg + 1].az - cells[gg - 1].az;
                                         return dx * dx + dy * dy;
                                 };
-                                double jL = cells[gi - 1].jz + cells[gi - 1].jzext;
-                                double jR = cells[gi + 1].jz + cells[gi + 1].jzext;
-                                double jU = cells[gi - gw].jz + cells[gi - gw].jzext;
-                                double jD = cells[gi + gw].jz + cells[gi + gw].jzext;
-                                double along = ((eR * eR - eL * eL) * tx + (eD * eD - eU * eU) * ty) * .5
-                                             + ((b2f(gi + 1) - b2f(gi - 1)) * tx + (b2f(gi + gw) - b2f(gi - gw)) * ty) * .5
-                                             + ((jR * jR - jL * jL) * tx + (jD * jD - jU * jU) * ty) * .5;
-                                double drift = 0;
-                                if (along > EM_DRIFT_NOISE || along < -EM_DRIFT_NOISE)
+                                double e2 = b2f(gi);
+                                double gx = (b2f(gi + 1) - b2f(gi - 1)) * 0.5;
+                                double gy = (b2f(gi + gw) - b2f(gi - gw)) * 0.5;
+                                // ferromagnets (perm > 1) move up the gradient of the
+                                // field energy, diamagnets (perm < 1) down it; the normaliser
+                                // keeps the force bounded while decaying like 1/L far away
+                                double sign = cell.perm > 1 ? 1.0 : -1.0;
+                                for (int sy = 0; sy < cellSize; sy++)
                                 {
-                                        drift = -std::clamp(along * 40.0, -1.0, 1.0);
-                                }
-                                else
-                                {
-                                        // drive 2 (fallback): the local conduction current itself
-                                        // (external source or induced) sets the flow direction when
-                                        // no usable gradient exists along the wire
-                                        double drive = cell.jz + cell.jzext;
-                                        if (std::abs(drive) > 1e-3)
+                                        for (int sx = 0; sx < cellSize; sx++)
                                         {
-                                                drift = std::clamp(drive, -1.0, 1.0);
+                                                int px = std::min(px0 + sx, XRES - 1);
+                                                int py = std::min(py0 + sy, YRES - 1);
+                                                int r = sim.pmap[py][px];
+                                                if (!r)
+                                                {
+                                                        continue;
+                                                }
+                                                auto &p = parts.data[ID(r)];
+                                                bool powder = IsMagPowder(p.type, p.temp);
+                                                bool solid = p.type == PT_FE || p.type == PT_PGRF ||
+                                                             p.type == PT_EMFM || p.type == PT_EMDM ||
+                                                             (p.type == PT_SCND && p.temp < EM_SC_TC);
+                                                if (!powder && !solid)
+                                                {
+                                                        continue;
+                                                }
+                                                float scale = powder ? EM_POWDER_FORCE : EM_SOLID_FORCE;
+                                                float fx = float(gx * sign * scale / (std::abs(e2) + EM_POWDER_NORM));
+                                                float fy = float(gy * sign * scale / (std::abs(e2) + EM_POWDER_NORM));
+                                                p.vx += std::clamp(fx, -0.8f, 0.8f);
+                                                p.vy += std::clamp(fy, -0.8f, 0.8f);
                                         }
                                 }
-                                if (drift != 0)
-                                {
-                                        float vdrift = float(drift) * EM_DRIFT_SPEED * cell.conductivity;
-                                        // task 2: both charges share the electron's
-                                        // kinematics, so the drift blend is the same
-                                        float blend = 1.0f;
-                                        float nvx = p.vx * (1 - blend) + tx * vdrift * blend;
-                                        float nvy = p.vy * (1 - blend) + ty * vdrift * blend;
-                                        p.vx = std::clamp(nvx, -vmax, vmax);
-                                        p.vy = std::clamp(nvy, -vmax, vmax);
-                                }
                         }
-                }
-        }
-
-        // pairwise Coulomb between the tracked charges (Newton's third law
-        // honoured by pushing both partners); skipped entirely when there are
-        // too many real particles to stay O(n^2)-cheap
-        if (realCharges.size() > 1)
-        {
-                for (size_t a = 0; a < realCharges.size(); a++)
-                {
-                        auto &ra = realCharges[a];
-                        if (ra.q == 0)
+                        // --- motor effect: Lorentz force on a bulk current -------
+                        // F = j x B. For our 2D TM field with j = (0,0,jz) and
+                        // B = (Bx,By,0), F = (-jz*By, jz*Bx, 0), a real in-plane
+                        // force on the current-carrying material. This is the
+                        // force that makes a wire jump in a real magnetic field
+                        // (the rail-gun / motor effect). Both the cell's induced
+                        // jz and external jzext drive it.
+                        double cellJz = cell.jz + cell.jzext;
+                        if (cell.conductivity > 0 && std::abs(cellJz) > 0.005)
                         {
-                                continue;
-                        }
-                        for (size_t b = a + 1; b < realCharges.size(); b++)
-                        {
-                                auto &rb = realCharges[b];
-                                if (rb.q == 0)
+                                double bx = (cells[gi + gw].az - cells[gi - gw].az) * 0.5;
+                                double by = (cells[gi - 1].az - cells[gi + 1].az) * 0.5;
+                                double mfx = -cellJz * by * EM_MOTOR_FORCE / double(substeps);
+                                double mfy =  cellJz * bx * EM_MOTOR_FORCE / double(substeps);
+                                float fxc = std::clamp(float(mfx), -0.5f, 0.5f);
+                                float fyc = std::clamp(float(mfy), -0.5f, 0.5f);
+                                if (std::abs(fxc) > 1e-4f || std::abs(fyc) > 1e-4f)
                                 {
-                                        continue;
-                                }
-                                float ddx = ra.x - rb.x;
-                                float ddy = ra.y - rb.y;
-                                float r2 = ddx * ddx + ddy * ddy;
-                                if (r2 > 64.0f)
-                                {
-                                        continue;
-                                }
-                                float r = std::sqrt(r2) + 1e-3f;
-                                float f = EM_COULOMB * ra.q * rb.q / (r2 + 0.5f) / r; // f/r * (ddx,ddy)
-                                auto &pa = parts.data[ra.i];
-                                auto &pb = parts.data[rb.i];
-                                pa.vx += f * ddx * EM_TADD_SUB * 4.0f / float(substeps);
-                                pa.vy += f * ddy * EM_TADD_SUB * 4.0f / float(substeps);
-                                pb.vx -= f * ddx * EM_TADD_SUB * 4.0f / float(substeps);
-                                pb.vy -= f * ddy * EM_TADD_SUB * 4.0f / float(substeps);
-                        }
-                }
-        }
-
-        if (substep + 1 == substeps)
-        {
-                // once per frame: magnetic pressure on ferromagnetic / diamagnetic
-                // powders (iron filings pull toward magnets, pyrolytic graphite and
-                // superconductors are pushed away; solid magnetic materials respond
-                // much more weakly), the motor effect (j x B force on current-
-                // carrying conductors) and Joule heating of the real conductors
-                // carrying induced current
-                for (int cy = 1; cy < gh - 1; cy++)
-                {
-                        for (int cx = 1; cx < gw - 1; cx++)
-                        {
-                                int gi = cx + cy * gw;
-                                auto &cell = cells[gi];
-                                // pixel position of this cell on the visible canvas:
-                                // the visible canvas is centred on the simulation
-                                // domain, so cell (cx,cy) maps to pixel
-                                // ((cx - renderOffX) * cs, (cy - renderOffY) * cs).
-                                int px0 = (cx - renderOffX) * cellSize;
-                                int py0 = (cy - renderOffY) * cellSize;
-                                if (px0 < 0 || py0 < 0 || px0 >= XRES || py0 >= YRES)
-                                {
-                                        continue; // cell outside the visible canvas
-                                }
-                                if (cell.magpowder || cell.magsolid)
-                                {
-                                        // |B|^2 of dynamic + static (monopole) field:
-                                        // iron filings must respond to a parked
-                                        // monopole exactly like they do to a magnet
-                                        auto b2f = [this](int gg) {
-                                                const auto &c = cells[gg];
-                                                double dx = cells[gg - gw].az - cells[gg + gw].az + c.bstatx;
-                                                double dy = cells[gg + 1].az - cells[gg - 1].az + c.bstaty;
-                                                return dx * dx + dy * dy;
-                                        };
-                                        double e2 = b2f(gi);
-                                        double gx = (b2f(gi + 1) - b2f(gi - 1)) * 0.5;
-                                        double gy = (b2f(gi + gw) - b2f(gi - gw)) * 0.5;
-                                        // ferromagnets (perm > 1) move up the gradient of the
-                                        // field energy, diamagnets (perm < 1) down it; the normaliser
-                                        // keeps the force bounded while decaying like 1/L far away
-                                        double sign = cell.perm > 1 ? 1.0 : -1.0;
                                         for (int sy = 0; sy < cellSize; sy++)
                                         {
                                                 for (int sx = 0; sx < cellSize; sx++)
@@ -1497,102 +1215,50 @@ void EMField::InteractParticles(int substep, int substeps)
                                                         int px = std::min(px0 + sx, XRES - 1);
                                                         int py = std::min(py0 + sy, YRES - 1);
                                                         int r = sim.pmap[py][px];
-                                                        if (!r)
-                                                        {
-                                                                continue;
-                                                        }
+                                                        if (!r) continue;
                                                         auto &p = parts.data[ID(r)];
-                                                        bool powder = IsMagPowder(p.type, p.temp);
-                                                        bool solid = p.type == PT_FE || p.type == PT_PGRF ||
-                                                                     p.type == PT_EMFM || p.type == PT_EMDM ||
-                                                                     (p.type == PT_SCND && p.temp < EM_SC_TC);
-                                                        if (!powder && !solid)
+                                                        // apply to EM-zone conductors and real-zone
+                                                        // conductors alike - the force is on the bulk
+                                                        // material carrying the current
+                                                        switch (p.type)
                                                         {
-                                                                continue;
+                                                        case PT_EMPC: case PT_EMEC: case PT_EMFC:
+                                                        case PT_EMFM: case PT_EMDM:
+                                                        case PT_FE: case PT_TI: case PT_CU: case PT_AG:
+                                                        case PT_FEPW: case PT_TIPW: case PT_CUPW: case PT_AGPW:
+                                                        case PT_SCND: case PT_SCPW:
+                                                                p.vx += fxc;
+                                                                p.vy += fyc;
+                                                                break;
+                                                        default:
+                                                                break;
                                                         }
-                                                        float scale = powder ? EM_POWDER_FORCE : EM_SOLID_FORCE;
-                                                        float fx = float(gx * sign * scale / (std::abs(e2) + EM_POWDER_NORM));
-                                                        float fy = float(gy * sign * scale / (std::abs(e2) + EM_POWDER_NORM));
-                                                        p.vx += std::clamp(fx, -0.8f, 0.8f);
-                                                        p.vy += std::clamp(fy, -0.8f, 0.8f);
                                                 }
                                         }
                                 }
-                                // --- motor effect: Lorentz force on a bulk current -------
-                                // F = j x B. For our 2D TM field with j = (0,0,jz) and
-                                // B = (Bx,By,0), F = (-jz*By, jz*Bx, 0), a real in-plane
-                                // force on the current-carrying material. This is the
-                                // force that makes a wire jump in a real magnetic field
-                                // (the rail-gun / motor effect), and it was missing.
-                                // Both the cell's induced jz and external jzext drive it;
-                                // the result is applied to every particle of an EM-zone
-                                // conductor in the cell, scaled by 1/substeps so the
-                                // total per-frame impulse stays the same regardless of
-                                // how many sub-steps the wave took.
-                                double cellJz = cell.jz + cell.jzext;
-                                if (cell.conductivity > 0 && std::abs(cellJz) > 0.005)
+                        }
+                        // Joule heating: induced current dissipates power in
+                        // the real conductors; superconductors below Tc have
+                        // no resistance and never heat up
+                        if (cell.heatable && cell.conductivity > 0 && std::abs(cell.jz) > 0.01)
+                        {
+                                float jzc = std::clamp(float(cell.jz), -2.0f, 2.0f);
+                                float heat = jzc * jzc * EM_JOULE_HEAT / float(substeps);
+                                if (heat >= 0.02f)
                                 {
-                                        double bx = (cells[gi + gw].az - cells[gi - gw].az) * 0.5;
-                                        double by = (cells[gi - 1].az - cells[gi + 1].az) * 0.5;
-                                        double mfx = -cellJz * by * EM_MOTOR_FORCE / double(substeps);
-                                        double mfy =  cellJz * bx * EM_MOTOR_FORCE / double(substeps);
-                                        float fxc = std::clamp(float(mfx), -0.5f, 0.5f);
-                                        float fyc = std::clamp(float(mfy), -0.5f, 0.5f);
-                                        if (std::abs(fxc) > 1e-4f || std::abs(fyc) > 1e-4f)
+                                        for (int sy = 0; sy < cellSize; sy++)
                                         {
-                                                for (int sy = 0; sy < cellSize; sy++)
+                                                for (int sx = 0; sx < cellSize; sx++)
                                                 {
-                                                        for (int sx = 0; sx < cellSize; sx++)
+                                                        int px = std::min(px0 + sx, XRES - 1);
+                                                        int py = std::min(py0 + sy, YRES - 1);
+                                                        int r = sim.pmap[py][px];
+                                                        if (r && IsRealHeatable(parts.data[ID(r)].type, parts.data[ID(r)].temp))
                                                         {
-                                                                int px = std::min(px0 + sx, XRES - 1);
-                                                                int py = std::min(py0 + sy, YRES - 1);
-                                                                int r = sim.pmap[py][px];
-                                                                if (!r) continue;
                                                                 auto &p = parts.data[ID(r)];
-                                                                // apply to EM-zone conductors and real-zone
-                                                                // conductors alike - the force is on the bulk
-                                                                // material carrying the current, not on the
-                                                                // individual charge
-                                                                switch (p.type)
+                                                                if (p.temp < MAX_TEMP)
                                                                 {
-                                                                case PT_EMPC: case PT_EMEC: case PT_EMFC:
-                                                                case PT_EMFM: case PT_EMDM:
-                                                                case PT_FE: case PT_TI: case PT_CU: case PT_AG:
-                                                                case PT_FEPW: case PT_TIPW: case PT_CUPW: case PT_AGPW:
-                                                                case PT_SCND: case PT_SCPW:
-                                                                        p.vx += fxc;
-                                                                        p.vy += fyc;
-                                                                        break;
-                                                                default:
-                                                                        break;
-                                                                }
-                                                        }
-                                                }
-                                        }
-                                }
-                                // Joule heating: induced current dissipates power in
-                                // the real conductors; superconductors below Tc have
-                                // no resistance and never heat up
-                                if (cell.heatable && cell.conductivity > 0 && std::abs(cell.jz) > 0.01)
-                                {
-                                        float jzc = std::clamp(float(cell.jz), -2.0f, 2.0f);
-                                        float heat = jzc * jzc * EM_JOULE_HEAT / float(substeps);
-                                        if (heat >= 0.02f)
-                                        {
-                                                for (int sy = 0; sy < cellSize; sy++)
-                                                {
-                                                        for (int sx = 0; sx < cellSize; sx++)
-                                                        {
-                                                                int px = std::min(px0 + sx, XRES - 1);
-                                                                int py = std::min(py0 + sy, YRES - 1);
-                                                                int r = sim.pmap[py][px];
-                                                                if (r && IsRealHeatable(parts.data[ID(r)].type, parts.data[ID(r)].temp))
-                                                                {
-                                                                        auto &p = parts.data[ID(r)];
-                                                                        if (p.temp < MAX_TEMP)
-                                                                        {
-                                                                                p.temp = std::min(p.temp + heat, MAX_TEMP);
-                                                                        }
+                                                                        p.temp = std::min(p.temp + heat, MAX_TEMP);
                                                                 }
                                                         }
                                                 }
@@ -1603,100 +1269,28 @@ void EMField::InteractParticles(int substep, int substeps)
         }
 }
 
-// Once per frame, after the wave sub-steps: carrier neutralisation and the
-// EM -> vanilla direction of the current interop.
+// Once per frame, after the wave sub-steps: the EM -> vanilla direction of the
+// current interop.
 //
-// a) an opposite carrier pair meeting in the same spot annihilates (charge is
-//    conserved: +1 and -1 vanish together);
-// b) a real charge touching a vanilla conductor sparks it, handing the current
-//    over to the vanilla conduction system - from there the spark propagates
-//    and interacts exactly like any vanilla spark, so our current can do
-//    everything a vanilla current can do. Particle indices are stable here
-//    (kill_part uses a free list), so batch operations are safe.
+// EMAN antenna (task 5): a coupler that bridges the EM field to vanilla SPRK.
+// The EM-zone elements CONNECTED to the antenna ARE its antenna: EMAN reads the
+// excitation current |jz + jzext| (the induced current driven by the wave
+// inside those elements) of the 3x3 EM-cell neighbourhood around itself and
+// compares it against its threshold. The threshold is .ctype in raw current
+// units (0 = default EMAN_THRESHOLD_DEFAULT, capped at EMAN_THRESHOLD_MAX); set
+// it with the PROP tool or by drawing with a value. When the excitation
+// exceeds the threshold, the antenna fires a vanilla SPRK on every adjacent
+// vanilla conductor (PROP_CONDUCTS, not already sparked / not in cooldown).
+//
+// Pair with an EMTX transmitter (vanilla -> EM) for bidirectional coupling:
+// EMTX radiates the wave, the wave drives currents inside the EM-zone
+// conductors touching EMAN, EMAN sparks the next circuit.
 void EMField::InteropParticles()
 {
         auto &sd = SimulationData::CRef();
         auto &elements = sd.elements;
         auto &parts = sim.parts;
 
-        // a) neutralisation over the tracked charges (bounded work); untracked
-        //    charges simply never neutralise, like beyond the pairwise limit
-        for (size_t a = 0; a + 1 < realCharges.size(); a++)
-        {
-                auto &ra = realCharges[a];
-                if (parts.data[ra.i].type == PT_NONE)
-                {
-                        continue;
-                }
-                for (size_t b = a + 1; b < realCharges.size(); b++)
-                {
-                        auto &rb = realCharges[b];
-                        if (parts.data[rb.i].type == PT_NONE)
-                        {
-                                continue;
-                        }
-                        bool opposite = (ra.q * rb.q < 0) || (ra.g * rb.g < 0);
-                        if (!opposite)
-                        {
-                                continue;
-                        }
-                        float ddx = ra.x - rb.x;
-                        float ddy = ra.y - rb.y;
-                        if (ddx * ddx + ddy * ddy > 2.0f)
-                        {
-                                continue;
-                        }
-                        sim.kill_part(ra.i);
-                        sim.kill_part(rb.i);
-                        break;
-                }
-        }
-
-        // b) EM -> vanilla: spark a vanilla conductor on contact
-        for (int i = 0; i < parts.active; ++i)
-        {
-                auto &p = parts.data[i];
-                if (p.type != PT_RPRO && p.type != PT_RELC)
-                {
-                        continue; // electric carriers only
-                }
-                int px = int(p.x + 0.5f);
-                int py = int(p.y + 0.5f);
-                if (px < 0 || py < 0 || px >= XRES || py >= YRES)
-                {
-                        continue;
-                }
-                unsigned r = sim.pmap[py][px];
-                if (!r)
-                {
-                        continue;
-                }
-                int ri = ID(r);
-                int tt = parts.data[ri].type;
-                if (tt == PT_NONE || tt == PT_SPRK || !(elements[tt].Properties & PROP_CONDUCTS))
-                {
-                        continue;
-                }
-                // vanilla spark conversion, exactly like the photoelectric effect
-                parts.data[ri].ctype = tt;
-                sim.part_change_type(ri, px, py, PT_SPRK);
-                parts.data[ri].life = 4;
-        }
-
-        // c) EMAN antenna (task 5): a coupler that bridges the EM field to
-        // vanilla SPRK. The EM-zone elements CONNECTED to the antenna ARE its
-        // antenna: EMAN reads the excitation current |jz + jzext| (the induced
-        // current driven by the wave inside those elements) of the 3x3 EM-cell
-        // neighbourhood around itself and compares it against its threshold.
-        // The threshold is .ctype in raw current units (0 = default
-        // EMAN_THRESHOLD_DEFAULT, capped at EMAN_THRESHOLD_MAX); set it with the
-        // PROP tool or by drawing with a value. When the excitation exceeds the
-        // threshold, the antenna fires a vanilla SPRK on every adjacent vanilla
-        // conductor (PROP_CONDUCTS, not already sparked / not in cooldown).
-        //
-        // Pair with an EMTX transmitter (vanilla -> EM) for bidirectional
-        // coupling: EMTX radiates the wave, the wave drives currents inside the
-        // EM-zone conductors touching EMAN, EMAN sparks the next circuit.
         for (int i = 0; i < parts.active; ++i)
         {
                 auto &p = parts.data[i];
@@ -1870,9 +1464,6 @@ void EMField::Update()
                 boundariesDirty = false;
         }
         SyncMaterials();
-        ComputeStaticB();
-        CollectRealCharges();
-        DepositRealCharges();
 
         // The wave is integrated in fixed sub-steps. The per-sub-step timestep is
         // taddEff = EM_TADD_SUB*2/cellSize so the wave keeps the same pixel speed
@@ -1887,7 +1478,15 @@ void EMField::Update()
         double tadd2 = double(taddEff) * double(taddEff);
         // band cells are integrated by the split-field PML (PmlStepA/B), not by
         // the interior wave update
-        bool outflow = boundaryMode == EMBND_OPEN || boundaryMode == EMBND_ABSORB;
+        bool outflow = boundaryMode == EMBND_OPEN;
+        // perf: the wave loops visit the interior rectangle ONLY - the band is
+        // handled by the dedicated PML passes, so no per-cell outflow branch is
+        // needed inside the hot loop (bit-exact, the branch used to skip
+        // exactly these cells)
+        const int i0 = outflow ? padL : 1;
+        const int i1 = outflow ? gw - padL : gw - 1;
+        const int j0 = outflow ? padT : 1;
+        const int j1 = outflow ? gh - padT : gh - 1;
 
         for (int substep = 0; substep < substeps; substep++)
         {
@@ -1903,15 +1502,10 @@ void EMField::Update()
                 // --- first pass: update dazdt from the neighbours (ported from EMWave2) ---
                 double forcecoef = 1;
                 int curMedium = 0;
-                for (int j = 1; j < gh - 1; j++)
+                for (int j = j0; j < j1; j++)
                 {
-                        for (int i = 1; i < gw - 1; i++)
+                        for (int i = i0; i < i1; i++)
                         {
-                                // outflow band cells skip the wave update entirely
-                                if (outflow && (i < padL || i >= gw - padL || j < padT || j >= gh - padT))
-                                {
-                                        continue;
-                                }
                                 int gi = i + j * gw;
                                 auto &oe = cells[gi];
                                 auto &oew = cells[gi - 1];
@@ -1948,13 +1542,13 @@ void EMField::Update()
                                         double basis = (nexti + previ + nextj + prevj) * .25;
                                         // calculate effective current
                                         double jz = oew.my - oee.my + oes.mx - oen.mx + oe.jz + oe.jzext;
-                                        a = oe.perm * basis + jz + oe.jmext;
+                                        a = oe.perm * basis + jz;
                                 }
                                 else
                                 {
                                         // easy way
                                         double basis = (oew.az + oee.az + oen.az + oes.az) * .25;
-                                        a = oe.jz + oe.jzext + oe.jmext - (oe.az - basis);
+                                        a = oe.jz + oe.jzext - (oe.az - basis);
                                 }
                                 oe.dazdt = oe.dazdt * oe.damp + a * forcecoef;
                         }
@@ -1970,16 +1564,12 @@ void EMField::Update()
                 }
 
                 // --- second pass: integrate az, and compute induced currents in conductors ---
-                for (int j = 1; j < gh - 1; j++)
+                for (int j = j0; j < j1; j++)
                 {
-                        for (int i = 1; i < gw - 1; i++)
+                        for (int i = i0; i < i1; i++)
                         {
                                 int gi = i + j * gw;
                                 auto &oe = cells[gi];
-                                if (outflow && (i < padL || i >= gw - padL || j < padT || j >= gh - padT))
-                                {
-                                        continue;
-                                }
                                 if (oe.conductivity > 0)
                                 {
                                         double a = -oe.dazdt * oe.conductivity;
@@ -2004,8 +1594,6 @@ void EMField::Update()
                 }
                 t += EM_TADD_SUB;
 
-                InteractParticles(substep, substeps);
-
 #if EMFIELD_DEBUG
                 double maxdazdt = 0;
                 for (const auto &cell : cells)
@@ -2022,14 +1610,17 @@ void EMField::Update()
         // once per frame, like the applet: high-frequency noise filter
         FilterGrid();
 
+        // once per frame: field -> matter forces and heating (magnetic pressure,
+        // motor effect, Joule heat)
+        ApplyFieldForces(substeps);
+
         // --- Task 9: energy conservation and the anti-divergence net -------------
         // In the linear regime the leapfrog scheme conserves energy exactly; the
         // historically divergent couplings are gone for good:
         //  * the permeability contrast is CFL-clamped (dynamic bound 2/taddEff^2),
         //    which removes the old ferromagnet self-excitation at its root;
-        //  * a static monopole field is superposed analytically instead of being
-        //    driven through the wave equation, so it cannot pump energy anymore;
-        //  * all external currents are clamped (EM_JZEXT_MAX).
+        //  * all external currents are bounded by construction (every jzext
+        //    writer assigns a value <= EM_JZEXT_MAX).
         // What remains is a two-level safety net, applied unconditionally:
         //  1. a hard clamp at EM_FIELD_CLAMP (a runaway must never reach inf),
         //  2. a soft bleed above EM_SOFT_LIMIT (1e3) that gently drains cells
@@ -2037,49 +1628,71 @@ void EMField::Update()
         //     (legit f=2 standing waves peak near |az| ~ 900),
         //  3. a NaN/Inf guard: one poisoned cell used to be able to spread NaN
         //     through the whole grid permanently; now it is zeroed instead.
+        // PERF: a cheap fused max-scan decides whether ANY cell needs attention;
+        // in the normal (bounded) case the expensive per-cell pass is skipped
+        // entirely. The pass itself is bit-for-bit the original one, so the
+        // result is identical whether or not it runs.
         {
+                // NOTE: double comparisons, exactly like the clamp pass below -
+                // a float narrowing here could miss cells in the last ULP below
+                // the soft limit and change the wave state
+                double maxAz = 0, maxDazdt = 0;
+                bool poisoned = false;
                 for (int gi = 0; gi < gw * gh; gi++)
                 {
-                        auto &cell = cells[gi];
+                        const auto &cell = cells[gi];
                         if (!std::isfinite(cell.az) || !std::isfinite(cell.dazdt))
                         {
-                                cell.az = 1e-10;
-                                cell.dazdt = 1e-10;
-                                cell.jz = 0;
-                                cell.jzext = 0;
-                                cell.jmext = 0;
-                                // keep the PML split bookkeeping consistent
-                                if (!pmlUy.empty())
+                                poisoned = true;
+                                break;
+                        }
+                        maxAz = std::max(maxAz, std::abs(cell.az));
+                        maxDazdt = std::max(maxDazdt, std::abs(cell.dazdt));
+                }
+                if (poisoned || maxAz > double(EM_SOFT_LIMIT) || maxDazdt > double(EM_SOFT_LIMIT))
+                {
+                        for (int gi = 0; gi < gw * gh; gi++)
+                        {
+                                auto &cell = cells[gi];
+                                if (!std::isfinite(cell.az) || !std::isfinite(cell.dazdt))
                                 {
-                                        pmlUy[gi] = 0;
-                                        pmlWy[gi] = 0;
+                                        cell.az = 1e-10;
+                                        cell.dazdt = 1e-10;
+                                        cell.jz = 0;
+                                        cell.jzext = 0;
+                                        // keep the PML split bookkeeping consistent
+                                        if (!pmlUy.empty())
+                                        {
+                                                pmlUy[gi] = 0;
+                                                pmlWy[gi] = 0;
+                                        }
+#if EMFIELD_DEBUG
+                                        fieldClampHits++;
+#endif
+                                        continue;
                                 }
+                                if (std::abs(cell.az) > double(EM_FIELD_CLAMP))
+                                {
+                                        cell.az = std::clamp(cell.az, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
 #if EMFIELD_DEBUG
-                                fieldClampHits++;
+                                        fieldClampHits++;
 #endif
-                                continue;
-                        }
-                        if (std::abs(cell.az) > double(EM_FIELD_CLAMP))
-                        {
-                                cell.az = std::clamp(cell.az, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
+                                }
+                                if (std::abs(cell.dazdt) > double(EM_FIELD_CLAMP))
+                                {
+                                        cell.dazdt = std::clamp(cell.dazdt, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
 #if EMFIELD_DEBUG
-                                fieldClampHits++;
+                                        fieldClampHits++;
 #endif
-                        }
-                        if (std::abs(cell.dazdt) > double(EM_FIELD_CLAMP))
-                        {
-                                cell.dazdt = std::clamp(cell.dazdt, -double(EM_FIELD_CLAMP), double(EM_FIELD_CLAMP));
-#if EMFIELD_DEBUG
-                                fieldClampHits++;
-#endif
-                        }
-                        if (std::abs(cell.az) > double(EM_SOFT_LIMIT))
-                        {
-                                cell.az *= EM_SOFT_BLEED;
-                        }
-                        if (std::abs(cell.dazdt) > double(EM_SOFT_LIMIT))
-                        {
-                                cell.dazdt *= EM_SOFT_BLEED;
+                                }
+                                if (std::abs(cell.az) > double(EM_SOFT_LIMIT))
+                                {
+                                        cell.az *= EM_SOFT_BLEED;
+                                }
+                                if (std::abs(cell.dazdt) > double(EM_SOFT_LIMIT))
+                                {
+                                        cell.dazdt *= EM_SOFT_BLEED;
+                                }
                         }
                 }
         }
@@ -2108,14 +1721,14 @@ double EMField::GetMagX(int gi) const
 {
         auto &oe = cells[gi];
         double mm = 1 - 1 / oe.perm;
-        return (cells[gi - gw].az - cells[gi + gw].az) * mm + oe.mx + oe.bstatx;
+        return (cells[gi - gw].az - cells[gi + gw].az) * mm + oe.mx;
 }
 
 double EMField::GetMagY(int gi) const
 {
         auto &oe = cells[gi];
         double mm = 1 - 1 / oe.perm;
-        return (cells[gi + 1].az - cells[gi - 1].az) * mm + oe.my + oe.bstaty;
+        return (cells[gi + 1].az - cells[gi - 1].az) * mm + oe.my;
 }
 
 bool EMField::ApplyAdjust(int gi, float strength)
