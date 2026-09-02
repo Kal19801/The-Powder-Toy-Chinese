@@ -98,7 +98,16 @@ if [[ -z ${BSH_NO_PACKAGES-} ]]; then
 			fi
 			pacman -S --noconfirm --needed mingw-w64-"$variant"-{gcc,meson}
 			if [[ $BSH_STATIC_DYNAMIC == static ]]; then
-				pacman -S --noconfirm --needed mingw-w64-"$variant"-{cmake,7zip,jq} patch
+				if [[ $BSH_HOST_ARCH == x86_64 ]]; then
+					pacman -S --noconfirm --needed mingw-w64-"$variant"-{cmake,7zip,jq} patch
+				else
+					# mingw-w64-i686-7zip and mingw-w64-i686-jq do not exist in
+					# the MINGW32 repository ("target not found"); jq is not
+					# used by this script at all and 7z (only needed by the
+					# tptlibsdev static path below) comes from the MSYS p7zip
+					# package instead
+					pacman -S --noconfirm --needed mingw-w64-"$variant"-cmake p7zip patch
+				fi
 			else
 				pacman -S --noconfirm --needed mingw-w64-"$variant"-{pkgconf,bzip2,luajit,jsoncpp,curl,SDL2,libpng,fftw,jq}
 			fi

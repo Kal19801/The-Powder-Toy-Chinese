@@ -1131,11 +1131,13 @@ namespace
                 // our grid is not, so use separate spacings to keep every start point
                 // inside the grid (otherwise the trace bails out of bounds before it can
                 // mark a crossing and the search never advances -> infinite loop).
-                // The line grid covers only the visible canvas (XRES/cellSize x
-                // YRES/cellSize cells), so it stays aligned with what is actually
-                // rendered even when regionScale > 1 makes the simulation domain bigger.
-                int visCW = XRES / emf.cellSize;
-                int visCH = YRES / emf.cellSize;
+                // The line grid covers only the visible canvas window in EM
+                // cells (renderW x renderH; at regionScale < 1 the field is
+                // rendered magnified by renderScale, so the visible window is
+                // smaller in cells than XRES/cellSize), keeping it aligned with
+                // what is actually rendered for every region size.
+                int visCW = emf.renderW;
+                int visCH = emf.renderH;
                 double lsx = lineGridSize / double(visCW);
                 double lsy = lineGridSize / double(visCH);
                 double multl = mult;
@@ -1258,10 +1260,12 @@ namespace
                                 olddn = dn;
                                 oldcol = col;
                         }
-                        int lx1 = int(oldx * emf.cellSize);
-                        int ly1 = int(oldy * emf.cellSize);
-                        int lx2 = int(x * emf.cellSize);
-                        int ly2 = int(y * emf.cellSize);
+                        // screen px per cell includes the 0.5x zoom factor
+                        int pxPerCell = emf.cellSize * emf.renderScale;
+                        int lx1 = int(oldx * pxPerCell);
+                        int ly1 = int(oldy * pxPerCell);
+                        int lx2 = int(x * pxPerCell);
+                        int ly2 = int(y * pxPerCell);
                         RGB rgb = RGB::Unpack(col);
                         ren.DrawLine(Vec2{ lx1, ly1 }, Vec2{ lx2, ly2 }, rgb);
                         if (doArrow && linegrid[cgx + lineGridSize * cgy] == 1)
@@ -1283,7 +1287,9 @@ void Renderer::draw_emfield()
         if (!emf || !emf->enabled || emViewMode == EMVIEW_OFF || emViewMode >= EMVIEW_COUNT)
                 return;
 
-        int cs = emf->cellSize;
+        // screen px per cell; the 0.5x region renders magnified by renderScale
+        // (0.5x fullscreen fix: the field still covers the whole canvas)
+        int cs = emf->cellSize * emf->renderScale;
         int gw = emf->gw;
         int gh = emf->gh;
         double mult = emf->brightness / 50.0;
@@ -1346,7 +1352,14 @@ void Renderer::draw_emfield()
                 forceState.Compute(*emf);
         }
 
-        for (int cy = 0; cy < gh; cy++)
+        // PERF: iterate the visible window only - cells outside it were always
+        // skipped by the vx/vy bounds checks below, the old loop just paid the
+        // iteration cost for every band/padding cell per frame.
+        int cx0 = std::max(0, emf->renderOffX);
+        int cy0 = std::max(0, emf->renderOffY);
+        int cx1 = std::min(gw, emf->renderOffX + emf->renderW);
+        int cy1 = std::min(gh, emf->renderOffY + emf->renderH);
+        for (int cy = cy0; cy < cy1; cy++)
         {
                 // Only cells inside the visible canvas window are rendered.
                 // renderOffX/Y is the cell-index offset of the visible canvas
@@ -1356,14 +1369,14 @@ void Renderer::draw_emfield()
                 // (regionScale > 1 padding) or to the boundary absorber band and
                 // are never drawn.
                 int vy = cy - emf->renderOffY;
-                if (vy < 0 || vy >= YRES / emf->cellSize)
+                if (vy < 0 || vy >= emf->renderH)
                 {
                         continue;
                 }
-                for (int cx = 0; cx < gw; cx++)
+                for (int cx = cx0; cx < cx1; cx++)
                 {
                         int vx = cx - emf->renderOffX;
-                        if (vx < 0 || vx >= XRES / emf->cellSize)
+                        if (vx < 0 || vx >= emf->renderW)
                         {
                                 continue;
                         }
@@ -1508,6 +1521,11 @@ void Renderer::draw_emfield()
                         }
                         int px = vx * cs;
                         int py = vy * cs;
+                        // The last cell column/row stretches to the canvas edge
+                        // when XRES/YRES is not divisible by the (zoomed) cell
+                        // size, so the field always covers the full screen.
+                        int spanX = (vx == emf->renderW - 1) ? XRES - px : cs;
+                        int spanY = (vy == emf->renderH - 1) ? YRES - py : cs;
                         // Compose the field additively on top of the air/particle view
                         // instead of painting an opaque cell grid over the whole canvas:
                         // an opaque overlay made every material look like cell-sized
@@ -1515,9 +1533,9 @@ void Renderer::draw_emfield()
                         // contribute nothing at all, so the game stays fully visible.
                         if (col_r || col_g || col_b)
                         {
-                                for (int yy = py; yy < std::min(py + cs, YRES); yy++)
+                                for (int yy = py; yy < std::min(py + spanY, YRES); yy++)
                                 {
-                                        for (int xx = px; xx < std::min(px + cs, XRES); xx++)
+                                        for (int xx = px; xx < std::min(px + spanX, XRES); xx++)
                                         {
                                                 video[{ xx, yy }] = RGB::Unpack(video[{ xx, yy }]).AddFire(rgb, 200).Pack();
                                         }

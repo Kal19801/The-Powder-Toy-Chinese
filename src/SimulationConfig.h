@@ -60,15 +60,18 @@ constexpr int EM_CELL_SIZE_COUNT = int(sizeof(EM_CELL_SIZES) / sizeof(EM_CELL_SI
 // are cheaper but coarser. The region/grid decoupling (regionScale) is independent.
 constexpr int EM_CELL_SIZE_DEFAULT = 2;
 
-// Region size multiplier (regionScale): scales the simulated EM domain independently
-// of the cell size. regionScale = 1 means the simulation domain equals the visible
-// canvas (XRES x YRES); 2/4/8 expand the domain beyond the visible canvas, so waves
-// can travel through (and partially into) the invisible padding before reaching the
-// boundary; 0.5 SHRINKS the domain to the central half of the canvas (XRES/2 x
-// YRES/2), which cuts the cell count (and therefore the CPU cost) by 4x - the
-// outer canvas area simply has no EM field, as if the domain were a smaller box.
-// This decouples "grid resolution" from "physical domain size" - shrinking
-// the grid no longer implicitly enlarges the simulated region.
+// Region size multiplier (regionScale): scales the simulated EM domain
+// independently of the cell size. regionScale = 1 means the simulation domain
+// equals the visible canvas (XRES x YRES) and renders 1:1; 2/4/8 expand the
+// domain beyond the visible canvas, so waves can travel through (and partially
+// into) the invisible padding before reaching the boundary while the canvas
+// shows the central 1:1 window; 0.5 SHRINKS the domain to half the canvas
+// extent per axis (XRES/2 x YRES/2, a quarter of the cells and CPU cost) but
+// the renderer MAGNIFIES it 2x so the field still covers the FULL screen -
+// the space is half, not the display. On screen the wave crosses the canvas
+// twice as fast with twice the wavelength, which is exactly what a physically
+// smaller world looks like. This decouples "grid resolution" from "physical
+// domain size".
 constexpr float EM_REGION_SCALES[] = { 0.5f, 1.0f, 2.0f, 4.0f, 8.0f };
 constexpr int EM_REGION_SCALE_COUNT = int(sizeof(EM_REGION_SCALES) / sizeof(EM_REGION_SCALES[0]));
 constexpr float EM_REGION_SCALE_DEFAULT = 1.0f;
@@ -139,30 +142,43 @@ constexpr float EM_CELLS_PER_SUBSTEP = EM_TADD_SUB * 0.5f; // reference (cellSiz
 // hard cap on gw*gh so extreme regionScale+cellSize combos cannot OOM
 constexpr long long EM_MAX_CELLS = 6000000LL;
 
-// --- absorbing boundary (task 8, v2: split-field PML) -------------------------
-// OPEN / ABSORB pad the grid with an invisible band OUTSIDE the simulated
-// region. The band is a Berenger-style split-field perfectly matched layer
-// (PML): pad cells split the wave into (ux,wx) and (uy,wy) components, each
-// damped along its own axis with a quartic graded profile. The split
-// displacement is damped with the SAME profile as its velocity
-// (ux,t + s*ux = wx), which makes the interface reflection exactly zero in
-// the continuum at every frequency and incidence angle. Measured |R|^2 with
-// the engine's exact update scheme (pulse reflectometry):
-//   f=40 (lam  6.7c): < 1e-12   f=10 (lam 27c, default): ~1e-11 (D=128)
-//   f=5  (lam 54c):   ~5e-6     f=2  (lam 134c):        ~2e-2 (low-f limit)
-// The profile peak scales as 1/cellSize so the layer is pixel-invariant,
-// matching the task-7 resolution decoupling (a wave crossing the band sees
-// the same attenuation in pixels at every grid resolution). f<=2 waves are
-// longer than the band itself; that residual is the thin-layer physics
-// limit, not a defect (old advective layer: |R|^2 ~ 0.01..0.19).
-constexpr int   EM_PAD_PX        = 256;  // PML band thickness in pixels
+// --- absorbing boundary (task 8, v2: split-field PML; v3: thin fast band) ----
+// OPEN pads the grid with an invisible band OUTSIDE the simulated region. The
+// band is a Berenger-style split-field perfectly matched layer (PML): pad
+// cells split the wave into (ux,wx) and (uy,wy) components, each damped along
+// its own axis with a quartic graded profile. The split displacement is damped
+// with the SAME profile as its velocity (ux,t + s*ux = wx), which makes the
+// interface reflection exactly zero in the continuum at every frequency and
+// incidence angle.
+//
+// v3 (performance fix): the old 256px band was 3.3x the area of the visible
+// domain at the default 2px cell, which made OPEN mode ~4x the cost of
+// CLOSED/PERIODIC. Two changes bring it to parity without giving up the
+// matched-layer quality:
+//  1. the band is 64px thick with the profile peak scaled 4x up, which keeps
+//     the optical depth sigma*D unchanged (measured pulse reflectometry, the
+//     engine's exact update scheme):
+//       f=40 (lam  6.7c): < 1e-12   f=10 (lam 27c, default): ~1e-11 (D=32)
+//       f=5  (lam 54c):   ~5e-6     f=2  (lam 134c):        ~2e-2 (low-f limit)
+//     the f<=2 residual is thin-layer physics, unchanged from the 256px band;
+//  2. EMField::ScanPmlActivity() gates the two band passes per sub-step: while
+//     the band AND an 8-cell interior guard strip are entirely quiet (max wave
+//     state < EM_PML_QUIET), the passes are skipped - numerically exact, since
+//     damping a below-threshold state keeps it below the threshold. A wave
+//     trips the gate at least 4 cells (max per-frame travel) before it can
+//     reach the interface, so the layer always wakes up in time. Scenes with
+//     no wave near the screen edge now run OPEN exactly as cheap as CLOSED.
+constexpr int   EM_PAD_PX        = 64;   // PML band thickness in pixels
 constexpr int   EM_PAD_MIN_CELLS = 16;
-constexpr int   EM_PAD_MAX_CELLS = 128;
+constexpr int   EM_PAD_MAX_CELLS = 96;
 // PML profile: per-sub-step damping exponent peak at the outer edge,
 // b = exp(-EM_PML_SIGMA * taddEff/EM_TADD_SUB * (depth/width)^EM_PML_POWER);
-// calibrated by offline pulse reflectometry (scripts/em_pml_test.cpp)
-constexpr float EM_PML_SIGMA     = 0.028f;
+// calibrated by offline pulse reflectometry
+constexpr float EM_PML_SIGMA     = 0.111f;
 constexpr float EM_PML_POWER     = 4.0f;
+// wave state below which a cell counts as quiet for the PML activity gate
+// (the vacuum seed is 1e-10, so a resting band is quiet by construction)
+constexpr float EM_PML_QUIET     = 1e-9f;
 
 // --- EM boundary conditions (设置 -> 电磁场边界条件) ---------------------------
 // NOTE: the numeric values are persisted in prefs, so they must not be renumbered.

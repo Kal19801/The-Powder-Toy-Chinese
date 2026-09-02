@@ -87,8 +87,19 @@ public:
         Simulation & sim;
 
         bool enabled = false;
-        int cellSize = EM_CELL_SIZE_DEFAULT; // EM cell edge in pixels
-        float regionScale = EM_REGION_SCALE_DEFAULT; // domain multiplier (0.5 = central half of the canvas, 1 = visible canvas, 2/4/8 = extends beyond)
+        int cellSize = EM_CELL_SIZE_DEFAULT; // EM cell edge in domain pixels
+        // regionScale semantics (0.5x fix): the simulated domain measures
+        // regionScale * (XRES x YRES) DOMAIN pixels. regionScale > 1 extends the
+        // domain beyond the canvas and the canvas shows the central 1:1 window;
+        // regionScale = 1 shows the domain 1:1; regionScale = 0.5 makes the
+        // domain HALF the canvas in each dimension but the renderer MAGNIFIES it
+        // by renderScale = 2 so the field still covers the FULL screen - the
+        // space is half, not the display (it is never a half-screen box with
+        // dead borders anymore). Waves cross the visible canvas renderScale
+        // times faster and their on-screen wavelength is renderScale times
+        // longer, which is exactly what "the simulated space is smaller" looks
+        // like; the cell count still drops 4x, so it stays the cheap option.
+        float regionScale = EM_REGION_SCALE_DEFAULT; // domain multiplier (0.5 = half the canvas extent per axis, rendered zoomed to full screen, 1 = 1:1, 2/4/8 = extends beyond)
         int boundaryMode = EMBND_DEFAULT;    // one of EmBoundaryMode
         int viewMode = EMVIEW_DEFAULT;       // one of EmViewMode, used by the renderer
         int sourceMode = EMSRC_DEFAULT;      // one of EmSourceMode
@@ -147,19 +158,23 @@ public:
         // rectangle [padL, padL+visW) x [padT, padT+visH). With regionScale = 1 the
         // visible area equals the simulation domain (apart from boundary padding).
         // With regionScale > 1 the simulation domain is regionScale * (XRES x YRES)
-        // pixels, so visW > XRES/cellSize: the cells outside the visible canvas are
+        // pixels, so visW > renderW: the cells outside the visible canvas are
         // simulated normally but never rendered, letting waves travel through the
         // invisible padding before reaching the actual boundary. With
-        // regionScale = 0.5 the domain is the CENTRAL HALF of the canvas and
-        // renderOffX/Y go NEGATIVE: canvas pixels outside the domain have no field.
+        // regionScale = 0.5 the domain is HALF the canvas extent per axis and the
+        // renderer magnifies it by renderScale = 2 to cover the full canvas
+        // (0.5x fullscreen fix, see the regionScale comment above).
         // CLOSED uses no padding (hard wall at domain edge); OPEN pads
         // with an invisible split-field PML band; PERIODIC pads by a one cell
         // ghost ring that is refreshed from the opposite edge each sub-step.
         int padL = 0, padT = 0;
-        int visW = 0, visH = 0; // total simulated grid extent in EM cells (may exceed visible)
-        // renderWindowX/Y/W/H: sub-rectangle of the grid that maps onto the visible
-        // canvas (XRES x YRES pixels). Always centred on the simulation domain.
-        int renderOffX = 0, renderOffY = 0; // cell-index offset: grid cell (renderOffX + i, renderOffY + j) renders at pixel (i*cs, j*cs)
+        int visW = 0, visH = 0; // total simulated grid extent in EM cells (may exceed the visible window)
+        // visible canvas window in cells and its zoom factor:
+        // renderScale = 1 for regionScale >= 1 (1:1 rendering), 2 for 0.5x.
+        // One cell spans cellSize * renderScale SCREEN pixels.
+        int renderScale = 1;
+        int renderW = 0, renderH = 0; // visible canvas in cells (XRES / (cellSize*renderScale))
+        int renderOffX = 0, renderOffY = 0; // cell-index offset: grid cell (renderOffX + i, renderOffY + j) renders at screen pixel (i*cellSize*renderScale, j*cellSize*renderScale)
         std::vector<Cell> cells;
 
         // dirty flag set by NotifyCellChanged, consumed at the start of Update()
@@ -206,6 +221,18 @@ public:
         // profile peak at the outer edge; full-grid float arrays (8 B/cell).
         std::vector<float> pmlUy, pmlWy;
         std::vector<float> pmlBX, pmlBY;
+
+        // PERF (task 8 v3): PML activity gate. ScanPmlActivity() runs once per
+        // frame and measures the max wave state over the band plus an 8-cell
+        // interior guard strip; while everything is below EM_PML_QUIET the two
+        // band passes are skipped for the whole frame. Skipping is numerically
+        // exact for a quiet band (damping a below-threshold state keeps it
+        // below the threshold), and the guard strip is deeper than the max
+        // per-frame wave travel (4 cells), so the layer always wakes up before
+        // a wave can reach the interface. This is what makes the OPEN mode as
+        // cheap as CLOSED in scenes without waves near the screen edges.
+        bool pmlQuiet = false;
+        void ScanPmlActivity();
 
         // debug counters, only meaningful with EMFIELD_DEBUG; the release build
         // keeps the memory (a few ints) but never reads them
@@ -276,11 +303,14 @@ public:
 
         // max real particle speed in px per frame, derived from the field
         // propagation speed; taddEff/2 cells per sub-step * cellSize px *
-        // substeps = px/frame, which is cellSize-independent by design (task 7)
+        // substeps = px/frame, which is cellSize-independent by design (task 7);
+        // at regionScale < 1 the field is rendered magnified by renderScale, so
+        // the on-screen speed scales with it (0.5x: waves cross the visible
+        // canvas twice as fast - the space is half)
         float MaxParticleSpeed() const
         {
                 int ss = EM_SUBSTEPS[speed < 0 || speed > 4 ? 1 : speed];
-                return taddEff * 0.5f * cellSize * float(ss);
+                return taddEff * 0.5f * cellSize * float(ss) * float(renderScale);
         }
         // CFL-safe permeability clamp for the current grid resolution:
         // the contrast ratio against the weakest perm must stay <= 2/taddEff^2
