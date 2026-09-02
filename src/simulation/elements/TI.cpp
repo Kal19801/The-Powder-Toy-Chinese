@@ -42,7 +42,9 @@ void Element::Element_TI()
         HeatConduct = 100;
         Description = ByteString("钛,轻质耐腐蚀,弱导电,熔点极高").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        // PROP_HOT_GLOW so the metal glows red-hot near its melting point,
+        // exactly like vanilla IRON/TTAN do (reference: IRON.cpp, TTAN.cpp).
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;

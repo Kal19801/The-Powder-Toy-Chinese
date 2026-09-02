@@ -42,7 +42,7 @@ void Element::Element_CU()
         HeatConduct = 251;
         Description = ByteString("铜,优良导体(电导率0.95),高温熔化").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;

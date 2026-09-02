@@ -57,6 +57,7 @@ class OptionsView: public ui::Window
         // TM-mode EM field settings (EMWave2 port)
         ui::Checkbox *emEnabled{};
         ui::DropDown *emCellSize{};
+        ui::DropDown *emRegionScale{};
         ui::DropDown *emBoundary{};
         ui::DropDown *emSourceMode{};
         ui::DropDown *emViewMode{};

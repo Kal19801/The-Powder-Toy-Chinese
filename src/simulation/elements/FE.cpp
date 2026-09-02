@@ -42,7 +42,9 @@ void Element::Element_FE()
         HeatConduct = 251;
         Description = ByteString("铁,真实铁磁材料,磁导率5/电导率0.5,可磁化,高温熔化").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        // PROP_HOT_GLOW so the metal glows red-hot near its melting point,
+        // exactly like vanilla IRON/TTAN do (reference: IRON.cpp, TTAN.cpp).
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;

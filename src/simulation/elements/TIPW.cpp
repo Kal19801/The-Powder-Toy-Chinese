@@ -44,7 +44,7 @@ void Element::Element_TIPW()
         HeatConduct = 90;
         Description = ByteString("钛粉,轻质耐腐蚀粉末,弱导电").FromUtf8();
 
-        Properties = TYPE_PART;
+        Properties = TYPE_PART | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;

@@ -225,6 +225,9 @@ simulation_elem_names = [
         'AGPW',
         'SCPW',
         'PGPW',
+        'EMAN',
+        'EMTX',
+        'EMJC',
 ]
 
 simulation_elem_src = []

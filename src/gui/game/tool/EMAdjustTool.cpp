@@ -203,8 +203,14 @@ void EMAdjustTool::Apply(Simulation *sim, ui::Point position)
         int gi = emf->CellIndex(position.X, position.Y);
         if (emf->ApplyEMProperty(configuration->property, configuration->applyMode, gi, configuration->value))
         {
-                // the wave equation needs to know about the material change right away
-                emf->CalcBoundaries();
+                // Task 10 / EMADJ lag fix: defer CalcBoundaries to the start of
+                // the next EMField::Update(). The previous code called
+                // CalcBoundaries() (an O(gw*gh) scan of the whole grid) after
+                // EVERY Apply(), which made a brush stroke O(gw*gh * brush_area)
+                // per frame - the source of the lag. The wave equation reads
+                // cell.boundary inside its inner loop, so we still need the
+                // recompute, but batching it to once per frame is enough.
+                emf->NotifyCellChanged();
         }
 }
 

@@ -44,7 +44,7 @@ void Element::Element_CUPW()
         HeatConduct = 200;
         Description = ByteString("铜粉,优良导体粉末,高温熔化").FromUtf8();
 
-        Properties = TYPE_PART;
+        Properties = TYPE_PART | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;

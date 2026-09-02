@@ -92,6 +92,7 @@ public:
 
         bool enabled = false;
         int cellSize = EM_CELL_SIZE_DEFAULT; // EM cell edge in pixels
+        int regionScale = EM_REGION_SCALE_DEFAULT; // domain multiplier (1 = visible canvas, 2/4/8 = extends beyond)
         int boundaryMode = EMBND_DEFAULT;    // one of EmBoundaryMode
         int viewMode = EMVIEW_DEFAULT;       // one of EmViewMode, used by the renderer
         int sourceMode = EMSRC_DEFAULT;      // one of EmSourceMode
@@ -145,12 +146,24 @@ public:
 
         int gw = 0, gh = 0; // grid size in EM cells
         // geometry of the boundary padding: the visible canvas maps to the grid
-        // rectangle [padL, padL+visW) x [padT, padT+visH). CLOSED/ABSORB use no
-        // padding, OPEN pads by the invisible absorber band, PERIODIC pads by a
-        // one cell ghost ring that is refreshed from the opposite edge each sub-step.
+        // rectangle [padL, padL+visW) x [padT, padT+visH). With regionScale = 1 the
+        // visible area equals the simulation domain (apart from boundary padding).
+        // With regionScale > 1 the simulation domain is regionScale * (XRES x YRES)
+        // pixels, so visW > XRES/cellSize: the cells outside the visible canvas are
+        // simulated normally but never rendered, letting waves travel through the
+        // invisible padding before reaching the actual boundary.
+        // CLOSED uses no padding (hard wall at domain edge); ABSORB and OPEN pad with
+        // an invisible absorber band; PERIODIC pads by a one cell ghost ring that is
+        // refreshed from the opposite edge each sub-step.
         int padL = 0, padT = 0;
-        int visW = 0, visH = 0; // visible (playable) grid extent in EM cells
+        int visW = 0, visH = 0; // total simulated grid extent in EM cells (may exceed visible)
+        // renderWindowX/Y/W/H: sub-rectangle of the grid that maps onto the visible
+        // canvas (XRES x YRES pixels). Always centred on the simulation domain.
+        int renderOffX = 0, renderOffY = 0; // cell-index offset: grid cell (renderOffX + i, renderOffY + j) renders at pixel (i*cs, j*cs)
         std::vector<Cell> cells;
+
+        // dirty flag set by NotifyCellChanged, consumed at the start of Update()
+        bool boundariesDirty = false;
 
         // one entry per EMW particle found during the last sync
         struct EmwSource
@@ -202,14 +215,24 @@ public:
         explicit EMField(Simulation & sim);
 
         void SetCellSize(int newCellSize); // reallocates and clears the grid
+        void SetRegionScale(int newScale); // reallocates and clears the grid
         void SetBoundaryMode(int newMode); // reallocates and clears the grid for the new boundary geometry
-        void ApplyGridGeometry();          // derive gw/gh/pad/vis from cellSize + boundaryMode and reallocate
+        void ApplyGridGeometry();          // derive gw/gh/pad/vis from cellSize + regionScale + boundaryMode and reallocate
         void Clear();                      // resets the wave state, keeps materials (applet doClear)
         void ClearAll();                   // resets the wave state and all tool overrides (applet doClearAll); used when the simulation itself is reset
         void ClearOverrides();             // removes all tool overrides
         void ClearCellOverrides(int gi);   // removes the tool overrides of one cell (used by the erase tools)
         void VacuumCell(int gi);           // applet MODE_CLEAR: remove all EM material and wave state from one cell
         void Update();                     // one simulation frame
+        // NotifyCellChanged(): batched hint that one or more EM cells had their
+        // material properties changed by an external tool (EMADJ); CalcBoundaries
+        // is then run once at the start of the next Update() instead of after
+        // every single brush dab, which is what made the EMADJ tool laggy.
+        void NotifyCellChanged();
+        // RunCalcBoundariesNow(): forces an immediate CalcBoundaries, used by the
+        // EMADJ tool when the user lifts the brush so the next frame sees the
+        // correct boundaries without waiting for an extra tick.
+        void RunCalcBoundariesNow();
 
         void SyncMaterials();
         void CalcBoundaries();

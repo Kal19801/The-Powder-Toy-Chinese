@@ -42,7 +42,7 @@ void Element::Element_AG()
         HeatConduct = 251;
         Description = ByteString("银,最佳导体(电导率1.0),高温熔化").FromUtf8();
 
-        Properties = TYPE_SOLID;
+        Properties = TYPE_SOLID | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;

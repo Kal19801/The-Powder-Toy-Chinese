@@ -44,7 +44,7 @@ void Element::Element_FEPW()
         HeatConduct = 200;
         Description = ByteString("铁粉,铁磁性粉末,会被磁场吸引排列,高温熔化").FromUtf8();
 
-        Properties = TYPE_PART;
+        Properties = TYPE_PART | PROP_HOT_GLOW;
 
         LowPressure = IPL;
         LowPressureTransition = NT;

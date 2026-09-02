@@ -258,7 +258,10 @@ void EMSelfTestTick(GameModel &gameModel, GameController &gameController)
         {
                 std::cout << "[EMSELFTEST] options window survived NotifySettingsChanged" << std::endl;
                 Check(sawVanillaSpark, "real charge on vanilla metal keeps it sparked (EM -> vanilla interop)");
-                Check(sawSparkFieldInject, "powered vanilla spark injects current into the EM field (vanilla -> EM interop)");
+                // Task 1: SPRK no longer excites the EM field - the test now verifies the
+                // reverse direction is OFF, so the EMField is driven only by its own
+                // sources and by real charges, not by vanilla sparks.
+                Check(!sawSparkFieldInject, "powered vanilla spark does NOT inject current into the EM field (task 1)");
                 // conduction drift: the electron on the driven copper wire moved along it
                 {
                         auto *sim = gameModel.GetSimulation();

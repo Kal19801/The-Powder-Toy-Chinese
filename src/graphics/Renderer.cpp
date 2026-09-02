@@ -1130,9 +1130,14 @@ namespace
                 // the applet uses one spacing for both axes because its grid is square;
                 // our grid is not, so use separate spacings to keep every start point
                 // inside the grid (otherwise the trace bails out of bounds before it can
-                // mark a crossing and the search never advances -> infinite loop)
-                double lsx = lineGridSize / double(emf.visW);
-                double lsy = lineGridSize / double(emf.visH);
+                // mark a crossing and the search never advances -> infinite loop).
+                // The line grid covers only the visible canvas (XRES/cellSize x
+                // YRES/cellSize cells), so it stays aligned with what is actually
+                // rendered even when regionScale > 1 makes the simulation domain bigger.
+                int visCW = XRES / emf.cellSize;
+                int visCH = YRES / emf.cellSize;
+                double lsx = lineGridSize / double(visCW);
+                double lsy = lineGridSize / double(visCH);
                 double multl = mult;
                 int linemax = 0;
                 int dir = 1;
@@ -1183,7 +1188,7 @@ namespace
                                 oldcgx = -1;
                                 oldcgy = -1;
                         }
-                        if (x < 0 || y < 0 || x >= emf.visW || y >= emf.visH)
+                        if (x < 0 || y < 0 || x >= visCW || y >= visCH)
                         {
                                 x = 0;
                                 continue;
@@ -1208,12 +1213,12 @@ namespace
                         }
                         int xi = int(x);
                         int yi = int(y);
-                        if (xi < 1 || yi < 1 || xi >= emf.visW - 1 || yi >= emf.visH - 1)
+                        if (xi < 1 || yi < 1 || xi >= visCW - 1 || yi >= visCH - 1)
                         {
                                 x = 0;
                                 continue;
                         }
-                        int gi = (xi + emf.padL) + emf.gw * (yi + emf.padT);
+                        int gi = (xi + emf.renderOffX) + emf.gw * (yi + emf.renderOffY);
                         double dx = emf.cells[gi - emf.gw].az - emf.cells[gi + emf.gw].az;
                         double dy = emf.cells[gi + 1].az - emf.cells[gi - 1].az;
                         double dn = std::sqrt(dx * dx + dy * dy);
@@ -1342,17 +1347,24 @@ void Renderer::draw_emfield()
 
         for (int cy = 0; cy < gh; cy++)
         {
-                int vy = cy - emf->padT;
-                if (vy < 0 || vy >= emf->visH)
+                // Only cells inside the visible canvas window are rendered.
+                // renderOffX/Y is the cell-index offset of the visible canvas
+                // inside the simulation domain (centred on it when regionScale > 1,
+                // equal to padL/padT when regionScale = 1). Cells outside this
+                // window belong to the invisible part of the simulation domain
+                // (regionScale > 1 padding) or to the boundary absorber band and
+                // are never drawn.
+                int vy = cy - emf->renderOffY;
+                if (vy < 0 || vy >= YRES / emf->cellSize)
                 {
-                        continue; // boundary padding is never rendered
+                        continue;
                 }
                 for (int cx = 0; cx < gw; cx++)
                 {
-                        int vx = cx - emf->padL;
-                        if (vx < 0 || vx >= emf->visW)
+                        int vx = cx - emf->renderOffX;
+                        if (vx < 0 || vx >= XRES / emf->cellSize)
                         {
-                                continue; // boundary padding is never rendered
+                                continue;
                         }
                         int gi = cx + cy * gw;
                         auto &cell = emf->cells[gi];

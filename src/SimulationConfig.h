@@ -54,7 +54,22 @@ constexpr float EM_MEDIUM_MAX_INDEX = .5f;
 //size 1 gives a field on the exact particle grid (1 cell = 1 particle, full alignment)
 constexpr int EM_CELL_SIZES[] = { 1, 2, 4, 8, 16 };
 constexpr int EM_CELL_SIZE_COUNT = int(sizeof(EM_CELL_SIZES) / sizeof(EM_CELL_SIZES[0]));
-constexpr int EM_CELL_SIZE_DEFAULT = 1;
+// Default cell size: 2 pixels per cell. The "1x" region (regionScale = 1) covers
+// exactly the visible canvas at this granularity, matching the previous "2 pixel"
+// setting; smaller cells give finer resolution at greater CPU cost, larger cells
+// are cheaper but coarser. The region/grid decoupling (regionScale) is independent.
+constexpr int EM_CELL_SIZE_DEFAULT = 2;
+
+// Region size multiplier (regionScale): scales the simulated EM domain independently
+// of the cell size. regionScale = 1 means the simulation domain equals the visible
+// canvas (XRES x YRES); 2/4/8 expand the domain beyond the visible canvas, so waves
+// can travel through (and partially into) the invisible padding before reaching the
+// boundary. This decouples "grid resolution" from "physical domain size" - shrinking
+// the grid no longer implicitly enlarges the simulated region.
+constexpr int EM_REGION_SCALES[] = { 1, 2, 4, 8 };
+constexpr int EM_REGION_SCALE_COUNT = int(sizeof(EM_REGION_SCALES) / sizeof(EM_REGION_SCALES[0]));
+constexpr int EM_REGION_SCALE_DEFAULT = 1;
+
 //edge damping margin, in EM cells, scaled from the applet's fixed 20 cell margin at a 4px cell size
 constexpr int EM_MARGIN_AT_4 = 20;
 //scale of Joule heating applied to real conducting particles sitting in cells that carry induced current
@@ -64,7 +79,9 @@ constexpr float EM_JOULE_HEAT = 2.0f;
 enum EmBoundaryMode
 {
         EMBND_CLOSED = 0,   // 封闭: perfectly conducting walls at the screen edge, full reflection
-        EMBND_ABSORB = 1,   // 吸收: applet-style exponential damping ramp on the visible screen edge
+        EMBND_ABSORB = 1,   // 吸收: exponential damping ramp on the OUTER edge of the domain
+                            //      (sits inside an invisible padding band, like OPEN, so the
+                            //      visible canvas is no longer eaten by the absorber)
         EMBND_OPEN   = 2,   // 开放: the absorber lives entirely in an invisible band OUTSIDE the
                             // screen (grid padding), so the visible interior is unmodified vacuum
         EMBND_PERIODIC = 3, // 循环: waves leaving one edge re-enter from the opposite edge (ghost ring)
@@ -72,16 +89,18 @@ enum EmBoundaryMode
 };
 constexpr int EMBND_DEFAULT = EMBND_ABSORB;
 // absorption strength of the invisible padding band of the OPEN boundary; the
-// pad is never rendered so it can be aggressively absorbing without visual cost
-constexpr float EM_OPEN_RAMP = 0.012f;
+// pad is never rendered so it can be aggressively absorbing without visual cost.
+// Tuned upward from 0.012 to 0.020 so the wave is attenuated strongly enough to
+// avoid the residual reflection the previous value produced at oblique incidence.
+constexpr float EM_OPEN_RAMP = 0.020f;
+// absorption strength of the ABSORB boundary; same idea as OPEN but with a softer
+// ramp (smaller coefficient) and a wider band, so the user-visible effect is a
+// gradual fade without reflection even at coarse cell sizes.
+constexpr float EM_ABSORB_RAMP = 0.014f;
 // maximum width of the invisible padding band in EM cells (keeps the padded grid
-// cheap at 1px cell size; 24 cells with EM_OPEN_RAMP attenuate a crossing wave
-// by a factor of e^24 in each direction, far below visibility)
-constexpr int EM_OPEN_PAD_MAX = 24;
-// current injected into the EM field by every powered vanilla spark (SPRK with
-// life > 0) sitting in a cell; this is the vanilla -> EM direction of the
-// current interop, a vanilla wire touching our materials excites our field
-constexpr float EM_SPRK_CURRENT = 0.5f;
+// cheap at 1px cell size; 32 cells with the tuned ramps attenuate a crossing wave
+// by a factor of e^32 in each direction, far below visibility)
+constexpr int EM_OPEN_PAD_MAX = 32;
 // conduction drift: real charges inside real-zone conductors are carried along
 // the wire by the local field (see EMField::InteractParticles); peak drift speed
 // in px per frame at full conductivity, clamped to the field propagation speed
@@ -123,10 +142,27 @@ constexpr float EM_CHARGE_CURRENT = 0.06f;
 // magnetic current injected by a moving monopole (drives dazdt directly,
 // symmetric to how jz drives the electric wave equation)
 constexpr float EM_MONO_CURRENT   = 0.06f;
+// static magnetic current injected by a stationary monopole placed on the canvas,
+// so a parked RMON actually carries a magnetic field of the same order as a painted
+// EMMG magnet (which sets mx/my = +-1). The dual of jzext for stationary sources.
+constexpr float EM_MONO_STATIC   = 1.0f;
 // gradient-of-field-magnitude force on real charges (dielectrophoretic coupling
 // of an in-plane charge to the TM field; polarity independent, like the
 // field-line pressure the applet draws in its force view)
 constexpr float EM_GRAD_FORCE     = 0.0006f;
+// Lorentz-like coupling for individual real charges: in pure 2D TM mode, the
+// in-plane B field would give an out-of-plane v x B force (unmodelled in 2D).
+// We instead apply a fictitious in-plane force F = q * (vy, -vx) * |B| * gain,
+// treating |B| as if it were a perpendicular Bz; this makes charges curve in
+// the field like real charges do in a real Bz field. Gain is small so this
+// stays a perturbation on top of the gradient force.
+constexpr float EM_LORENTZ_FORCE   = 0.0010f;
+// Motor effect (Lorentz force on a current): the bulk force density on a
+// current-carrying conductor is F = j x B. For our 2D TM field with j = (0,0,jz)
+// and B = (Bx,By,0), this gives F = (-jz*By, jz*Bx, 0) - a real, in-plane force
+// on the conductor. Gain scales the force so a visible motion results at the
+// magnitudes of j and B the simulation typically produces.
+constexpr float EM_MOTOR_FORCE     = 0.020f;
 // Coulomb-like pairwise force between real charges at short range (softened);
 // electron/proton mass ratio = 1836 gives the proton its sluggish response
 constexpr float EM_COULOMB        = 0.0045f;
