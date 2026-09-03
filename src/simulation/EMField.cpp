@@ -1558,7 +1558,6 @@ void EMField::ScanPmlActivity()
         auto probe = [&](int gi)
         {
                 const auto &oe = cells[gi];
-                const auto &oe = cells[gi];
                 // NaN is never <= threshold, so poisoned cells read as active
                 if (!(std::abs(oe.az) <= double(EM_PML_QUIET)) ||
                     !(std::abs(oe.dazdt) <= double(EM_PML_QUIET)) ||
