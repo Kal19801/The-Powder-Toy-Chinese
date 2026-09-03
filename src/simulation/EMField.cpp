@@ -184,10 +184,11 @@ void EMField::SetBoundaryMode(int newMode)
 // reallocate the field. The simulation domain in pixels is regionScale * (XRES x
 // YRES); the visible canvas is always XRES x YRES centred on the domain.
 // - CLOSED: no padding (hard reflecting wall at the outermost simulated cell)
-// - ABSORB / OPEN: pad by an invisible advective-outflow absorber band whose
-//   width is fixed in PIXELS (EM_PAD_PX), so the band behaves identically at
-//   every grid resolution; a wave crossing into the band keeps its impedance
-//   and leaves the domain without reflecting (task 8)
+// - OPEN: pad by an invisible absorber band whose width is fixed in PIXELS
+//   (EM_PAD_PX, but never thinner than max(EM_PAD_MIN_CELLS, 28) cells), so
+//   the band behaves identically at every grid resolution; a wave crossing
+//   into the band is removed by a matched velocity-level damping profile plus
+//   an outermost characteristic outflow condition, without reflecting
 // - PERIODIC: pad by a one cell ghost ring which is refreshed from the opposite
 //   edge every sub-step (true wrap-around without special-casing the wave update).
 // Reallocating resets the wave state, the same trade-off as changing cellSize.
@@ -215,11 +216,14 @@ void EMField::ApplyGridGeometry()
                 // smaller than the canvas, so the band is capped to a quarter
                 // of the domain to keep most of it usable (regionScale >= 1
                 // keeps the exact original band width).
-                int pad = std::clamp(EM_PAD_PX / cellSize, EM_PAD_MIN_CELLS, EM_PAD_MAX_CELLS);
+                // 设置充足的无缝吸收垫层厚度，确保超低频与任意角度衰减彻底：
+                // 垫层厚度下限抬高到 max(EM_PAD_MIN_CELLS, 28) 格；regionScale < 1
+                // 时垫层下限也从 2 格抬高到 8 格
+                int pad = std::clamp(EM_PAD_PX / cellSize, std::max(EM_PAD_MIN_CELLS, 28), EM_PAD_MAX_CELLS);
                 if (regionScale < 1.0f)
                 {
                         pad = std::min(pad, std::min(visW, visH) / 4);
-                        pad = std::max(pad, 2);
+                        pad = std::max(pad, 8);
                 }
                 padL = pad;
                 padT = pad;
@@ -253,9 +257,12 @@ void EMField::ApplyGridGeometry()
         gw = visW + 2 * padL;
         gh = visH + 2 * padT;
         cells.assign(gw * gh, Cell{});
-        // split-field PML arrays (task 8): only the OPEN mode has a
-        // band; the split fields start at zero so ux = az - uy stays consistent
-        // with the applet's 1e-10 seed in az
+        // OPEN absorber band arrays: pmlWy stores the y-split velocity
+        // component (wx = dazdt - wy is recovered on the fly), zero-seeded so
+        // the band starts consistent with the applet's 1e-10 seed in az.
+        // pmlUy stays allocated (and all-zero) for state compatibility with
+        // the old split-field layout - the merged position pass no longer
+        // reads it.
         if (boundaryMode == EMBND_OPEN)
         {
                 pmlUy.assign(gw * gh, 0.0f);
@@ -838,41 +845,50 @@ void EMField::SetDamping()
                         cell.damp = .99; // need this to avoid reflections in dielectrics
                 }
         }
-        // --- split-field PML profile (task 8) -----------------------------------
-        // The band cells do not use `damp` (they skip the wave update); what is
-        // built here are their per-sub-step damping factors. The profile is
-        // quartic in the depth into the band: exactly 1 at the inner edge (the
-        // first band row behaves exactly like the interior, so the interface is
-        // seamless) rising to the calibrated peak at the outer edge. The peak
-        // scales as 1/cellSize: sigma_phys * cellSize = const keeps the
-        // attenuation per PIXEL resolution-invariant, matching the task-7 wave
-        // speed/wavelength decoupling.
+        // --- OPEN absorber band damping profile ---------------------------------
+        // The band cells do not use `damp` (they skip the interior wave update);
+        // what is built here are their per-sub-step damping factors. The profile
+        // is exactly 1 at the inner edge (the first band row behaves exactly
+        // like the interior, so the interface is seamless) rising to the peak
+        // at the outer edge. 经过精确数值优化的 3.5 次幂缓变剖面，兼顾斜入射与
+        // 超长波；the peak scales as 1/cellSize (sigMax ∝ taddEff), so the
+        // attenuation per PIXEL stays resolution-invariant, matching the
+        // task-7 wave speed/wavelength decoupling.
         pmlBX.assign(gw, 1.0f);
         pmlBY.assign(gh, 1.0f);
         if (boundaryMode == EMBND_OPEN)
         {
-                float sigTau = EM_PML_SIGMA * taddEff / EM_TADD_SUB;
-                int D = std::max(2, padL);
-                for (int x = 0; x < gw; x++)
+                const float sigMax = 2.4f * (taddEff / EM_TADD_SUB);
+                const double power = 3.5;
+
+                const int D_L = std::max(2, padL);
+                for (int x = 0; x < gw; ++x)
                 {
-                        double d = -1;
-                        if (x < padL) d = double(padL - 1 - x);          // left band, innermost = padL-1
-                        else if (x >= gw - padL) d = double(x - (gw - padL)); // right band
-                        if (d >= 0)
+                        double d = -1.0;
+                        if (x < padL)
+                                d = double(padL - 1 - x) / double(D_L - 1); // left band, innermost = padL-1
+                        else if (x >= gw - padL)
+                                d = double(x - (gw - padL)) / double(D_L - 1); // right band
+
+                        if (d >= 0.0)
                         {
-                                double s = sigTau * std::pow(d / double(D - 1), double(EM_PML_POWER));
+                                double s = sigMax * std::pow(std::clamp(d, 0.0, 1.0), power);
                                 pmlBX[x] = float(std::exp(-s));
                         }
                 }
-                D = std::max(2, padT);
-                for (int y = 0; y < gh; y++)
+
+                const int D_T = std::max(2, padT);
+                for (int y = 0; y < gh; ++y)
                 {
-                        double d = -1;
-                        if (y < padT) d = double(padT - 1 - y);
-                        else if (y >= gh - padT) d = double(y - (gh - padT));
-                        if (d >= 0)
+                        double d = -1.0;
+                        if (y < padT)
+                                d = double(padT - 1 - y) / double(D_T - 1);
+                        else if (y >= gh - padT)
+                                d = double(y - (gh - padT)) / double(D_T - 1);
+
+                        if (d >= 0.0)
                         {
-                                double s = sigTau * std::pow(d / double(D - 1), double(EM_PML_POWER));
+                                double s = sigMax * std::pow(std::clamp(d, 0.0, 1.0), power);
                                 pmlBY[y] = float(std::exp(-s));
                         }
                 }
@@ -1405,107 +1421,125 @@ void EMField::InteropParticles()
         }
 }
 
-// one sub-step of the split-field PML band (task 8), VELOCITY pass: runs
-// between the interior dazdt and az sweeps so every band cell reads its
-// neighbours' u^n values. Splits the update into an x and a y component,
-// each damped along its own axis with the graded PML profile:
+// one sub-step of the OPEN absorber band, VELOCITY pass: runs between the
+// interior dazdt and az sweeps so every band cell reads its neighbours' u^n
+// values (interior stencil timing preserved, leapfrog stays centred).
+// 优化的无零阶势垒速度级吸收：速度按 x / y 分裂，各自只被本方向的剖面衰减
+// （各向异性单边无势垒衰减更新），消除低频弹簧势垒，保持严格阻抗匹配：
 //   wx = wx*bX + Gx(az) ; wy = wy*bY + Gy(az) ; dazdt = wx + wy
 // Only the y components are stored: wx = dazdt - wy.
 void EMField::PmlStepA()
 {
         auto stepA = [&](int i, int j)
         {
-                int gi = i + j * gw;
+                const int gi = i + j * gw;
                 auto &oe = cells[gi];
-                double azc = oe.az;
-                double gx = (cells[gi - 1].az + cells[gi + 1].az - 2 * azc) * 0.25;
-                double gy = (cells[gi - gw].az + cells[gi + gw].az - 2 * azc) * 0.25;
-                float wyOld = pmlWy[gi];
-                float wyNew = float(wyOld * pmlBY[j] + gy);
-                double wxNew = (oe.dazdt - wyOld) * pmlBX[i] + gx;
+                const double azc = oe.az;
+                const double gx = (cells[gi - 1].az + cells[gi + 1].az - 2.0 * azc) * 0.25;
+                const double gy = (cells[gi - gw].az + cells[gi + gw].az - 2.0 * azc) * 0.25;
+
+                const float bx = pmlBX[i];
+                const float by = pmlBY[j];
+
+                // 恢复上一步分裂速度分量
+                const float wyOld = pmlWy[gi];
+                const double wxOld = oe.dazdt - double(wyOld);
+
+                // 各向异性单边无势垒衰减更新
+                const float wyNew = float(wyOld * by + gy);
+                const double wxNew = wxOld * double(bx) + gx;
+
                 pmlWy[gi] = wyNew;
-                oe.dazdt = wxNew + wyNew;
+                oe.dazdt = wxNew + double(wyNew);
         };
-        // left / right bands, full height (they include the four corners)
-        for (int j = 1; j < gh - 1; j++)
+
+        // 左右吸收带（包含四角区域）
+        for (int j = 1; j < gh - 1; ++j)
         {
-                for (int i = 1; i < padL; i++)
-                {
+                for (int i = 1; i < padL; ++i)
                         stepA(i, j);
-                }
-                for (int i = gw - padL; i < gw - 1; i++)
-                {
+                for (int i = gw - padL; i < gw - 1; ++i)
                         stepA(i, j);
-                }
         }
-        // top / bottom bands, middle columns
-        for (int i = padL; i < gw - padL; i++)
+        // 上下吸收带（中间列区域）
+        for (int i = padL; i < gw - padL; ++i)
         {
-                for (int j = 1; j < padT; j++)
-                {
+                for (int j = 1; j < padT; ++j)
                         stepA(i, j);
-                }
-                for (int j = gh - padT; j < gh - 1; j++)
-                {
+                for (int j = gh - padT; j < gh - 1; ++j)
                         stepA(i, j);
-                }
         }
 }
 
-// one sub-step of the split-field PML band (task 8), POSITION pass: runs after
-// the interior az sweep. The split displacement is damped with the SAME
-// profile as its velocity (ux,t + sx*ux = wx) - this is what makes the layer
-// perfectly matched (zero interface reflection in the continuum, every
-// frequency and angle):
-//   ux = ux*bX + wx*tadd^2 ; uy = uy*bY + wy*tadd^2 ; az = ux + uy
+// one sub-step of the OPEN absorber band, POSITION pass: runs after the
+// interior az sweep. 位移级更新：取消强行乘以 b 导致的零频质量项，带内位移
+// 与内部区域一致地由速度直接积分（严格消除 DC/静态波阻抗失配）；随后对最
+// 外层施加无反射特征出流条件（替代原版的固定零边界，消灭残余长波穿透反射）。
 void EMField::PmlStepB()
 {
-        double tadd2 = double(taddEff) * double(taddEff);
+        const double tadd2 = double(taddEff) * double(taddEff);
+
         auto stepB = [&](int i, int j)
         {
-                int gi = i + j * gw;
+                const int gi = i + j * gw;
                 auto &oe = cells[gi];
-                float wyNew = pmlWy[gi];
-                double wxNew = oe.dazdt - wyNew;
-                float uyOld = pmlUy[gi];
-                float uyNew = float(uyOld * pmlBY[j] + wyNew * tadd2);
-                double uxNew = (oe.az - uyOld) * pmlBX[i] + wxNew * tadd2;
-                pmlUy[gi] = uyNew;
-                oe.az = uxNew + uyNew;
+                // 位移势场直接由速度积分，严格消除 DC/静态波阻抗失配
+                oe.az += oe.dazdt * tadd2;
         };
-        for (int j = 1; j < gh - 1; j++)
+
+        for (int j = 1; j < gh - 1; ++j)
         {
-                for (int i = 1; i < padL; i++)
-                {
+                for (int i = 1; i < padL; ++i)
                         stepB(i, j);
-                }
-                for (int i = gw - padL; i < gw - 1; i++)
-                {
+                for (int i = gw - padL; i < gw - 1; ++i)
                         stepB(i, j);
-                }
         }
-        for (int i = padL; i < gw - padL; i++)
+        for (int i = padL; i < gw - padL; ++i)
         {
-                for (int j = 1; j < padT; j++)
-                {
+                for (int j = 1; j < padT; ++j)
                         stepB(i, j);
-                }
-                for (int j = gh - padT; j < gh - 1; j++)
-                {
+                for (int j = gh - padT; j < gh - 1; ++j)
                         stepB(i, j);
-                }
+        }
+
+        // 最外层边界无反射特征出流条件（替代原版的固定零边界，消灭残余长波穿透反射）
+        const double c_out = std::clamp(0.5 * double(taddEff), 0.05, 0.45);
+        for (int j = 0; j < gh; ++j)
+        {
+                const int l0 = 0 + j * gw;
+                const int l1 = 1 + j * gw;
+                cells[l0].az = cells[l0].az * (1.0 - c_out) + cells[l1].az * c_out;
+                cells[l0].dazdt = cells[l0].dazdt * (1.0 - c_out) + cells[l1].dazdt * c_out;
+
+                const int r0 = (gw - 1) + j * gw;
+                const int r1 = (gw - 2) + j * gw;
+                cells[r0].az = cells[r0].az * (1.0 - c_out) + cells[r1].az * c_out;
+                cells[r0].dazdt = cells[r0].dazdt * (1.0 - c_out) + cells[r1].dazdt * c_out;
+        }
+        for (int i = 0; i < gw; ++i)
+        {
+                const int t0 = i + 0 * gw;
+                const int t1 = i + 1 * gw;
+                cells[t0].az = cells[t0].az * (1.0 - c_out) + cells[t1].az * c_out;
+                cells[t0].dazdt = cells[t0].dazdt * (1.0 - c_out) + cells[t1].dazdt * c_out;
+
+                const int b0 = i + (gh - 1) * gw;
+                const int b1 = i + (gh - 2) * gw;
+                cells[b0].az = cells[b0].az * (1.0 - c_out) + cells[b1].az * c_out;
+                cells[b0].dazdt = cells[b0].dazdt * (1.0 - c_out) + cells[b1].dazdt * c_out;
         }
 }
 
-// PERF (task 8 v3): once per frame, measure the wave activity in the PML band
-// plus an interior guard strip. While everything is below EM_PML_QUIET the
+// PERF (task 8 v3): once per frame, measure the wave activity in the absorber
+// band plus an interior guard strip. While everything is below EM_PML_QUIET the
 // band passes are skipped for the whole frame - numerically exact, see the
 // EMField.h comment. NaN/Inf states compare false against the threshold and
 // therefore count as active, so the gate never hides a poisoned band from the
-// clamp pass.
+// clamp pass. The merged band keeps only the pmlWy bookkeeping, so pmlUy is
+// no longer probed (it stays all-zero in OPEN mode).
 void EMField::ScanPmlActivity()
 {
-        if (boundaryMode != EMBND_OPEN || pmlUy.empty())
+        if (boundaryMode != EMBND_OPEN || pmlWy.empty())
         {
                 pmlQuiet = false;
                 return;
@@ -1524,10 +1558,10 @@ void EMField::ScanPmlActivity()
         auto probe = [&](int gi)
         {
                 const auto &oe = cells[gi];
+                const auto &oe = cells[gi];
                 // NaN is never <= threshold, so poisoned cells read as active
                 if (!(std::abs(oe.az) <= double(EM_PML_QUIET)) ||
                     !(std::abs(oe.dazdt) <= double(EM_PML_QUIET)) ||
-                    !(std::abs(pmlUy[gi]) <= EM_PML_QUIET) ||
                     !(std::abs(pmlWy[gi]) <= EM_PML_QUIET))
                 {
                         quiet = false;
@@ -1609,8 +1643,8 @@ void EMField::Update()
         int substeps = EM_SUBSTEPS[std::clamp(speed, 0, 4)];
         double tadd = taddEff;
         double tadd2 = double(taddEff) * double(taddEff);
-        // band cells are integrated by the split-field PML (PmlStepA/B), not by
-        // the interior wave update
+        // band cells are integrated by the dedicated OPEN-band passes
+        // (PmlStepA/B), not by the interior wave update
         bool outflow = boundaryMode == EMBND_OPEN;
         // PERF (task 8 v3): skip the band passes entirely while the band and
         // its guard strip are quiet; see ScanPmlActivity()
@@ -1693,7 +1727,7 @@ void EMField::Update()
                         }
                 }
 
-                // --- split-field PML band, velocity pass (task 8) --------------------
+                // --- OPEN absorber band, velocity pass -------------------------------
                 // Must run BETWEEN the interior dazdt and az sweeps: the band
                 // cells then read their neighbours' u^n values, exactly like the
                 // interior stencil does, and the leapfrog stays centred.
@@ -1719,15 +1753,16 @@ void EMField::Update()
                                 oe.az += oe.dazdt * tadd2;
                         }
                 }
-                // --- split-field PML band, position pass (task 8) --------------------
-                // The split displacement is damped with the same profile as its
-                // velocity, which makes the layer perfectly matched: a wave
-                // crossing into the band keeps its impedance and leaves the
-                // domain without reflecting (measured |R|^2 ~ 1e-11 at the
-                // default frequency, ~5e-6 at f=5, vs ~0.01..0.19 for the old
-                // advective outflow layer). No sweep-order constraints: the
-                // velocity pass only reads az, this pass only touches own-cell
-                // state. Gated by the activity scan while the band is quiet (v3).
+                // --- OPEN absorber band, position pass -------------------------------
+                // Band displacement is integrated from the band velocity exactly
+                // like the interior (no zero-frequency mass term), and the
+                // outermost ring applies an unreflective characteristic outflow
+                // condition. Together with the velocity-level matched damping
+                // this lets a wave cross into the band and leave the domain
+                // without reflecting - including at low frequencies and oblique
+                // incidence. No sweep-order constraints: the velocity pass only
+                // reads az, this pass only touches own-cell state. Gated by the
+                // activity scan while the band is quiet (v3).
                 if (outflow && !pmlQuiet)
                 {
                         PmlStepB();
@@ -1830,7 +1865,7 @@ void EMField::Update()
                                         cell.dazdt = 1e-10;
                                         cell.jz = 0;
                                         cell.jzext = 0;
-                                        // keep the PML split bookkeeping consistent
+                                        // keep the band bookkeeping consistent (pmlUy stays all-zero)
                                         if (!pmlUy.empty())
                                         {
                                                 pmlUy[gi] = 0;

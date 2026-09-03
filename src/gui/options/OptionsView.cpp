@@ -390,8 +390,8 @@ OptionsView::OptionsView() : ui::Window(ui::Point(-1, -1), ui::Point(320, 340))
         // dropdown values are INDICES into EM_REGION_SCALES (the widget stores
         // ints); the callback converts the index back to the actual scale
         emRegionScale = addDropDown(ByteString("电磁场区域大小").FromUtf8(), {
-                { ByteString("0.5x (空间减半,仍全屏)").FromUtf8(), 0 },
-                { ByteString("1x (全屏)").FromUtf8(), 1 },
+                { ByteString("0.5x").FromUtf8(), 0 },
+                { ByteString("1x").FromUtf8(), 1 },
                 { ByteString("2x").FromUtf8(), 2 },
                 { ByteString("4x").FromUtf8(), 4 },
                 { ByteString("8x").FromUtf8(), 8 },
