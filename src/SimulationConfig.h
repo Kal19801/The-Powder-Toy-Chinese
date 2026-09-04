@@ -89,7 +89,7 @@ inline int EmRegionScaleIndex(float regionScale)
 }
 
 //edge damping margin, in EM cells, scaled from the applet's fixed 20 cell margin at a 4px cell size
-constexpr int EM_MARGIN_AT_4 = 40;
+constexpr int EM_MARGIN_AT_4 = 2;
 //scale of Joule heating applied to real conducting particles sitting in cells that carry induced current
 constexpr float EM_JOULE_HEAT = 2.0f;
 
