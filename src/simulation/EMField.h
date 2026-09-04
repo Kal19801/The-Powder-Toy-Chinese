@@ -165,7 +165,7 @@ public:
         // renderer magnifies it by renderScale = 2 to cover the full canvas
         // (0.5x fullscreen fix, see the regionScale comment above).
         // CLOSED uses no padding (hard wall at domain edge); OPEN pads
-        // with an invisible split-field PML band; PERIODIC pads by a one cell
+        // with an invisible Berenger-pair PML band; PERIODIC pads by a one cell
         // ghost ring that is refreshed from the opposite edge each sub-step.
         int padL = 0, padT = 0;
         int visW = 0, visH = 0; // total simulated grid extent in EM cells (may exceed the visible window)
@@ -208,19 +208,28 @@ public:
         int filterCount = 0;
         int margin = EM_MARGIN_AT_4; // absorbing edge width in cells
 
-        // --- split-field PML state (task 8, OPEN only) ------------------------
-        // The band replaces the wave equation with a damped split system:
-        //   wx = wx*bX + Gx(az) ; wy = wy*bY + Gy(az)   (velocity split)
-        //   ux = ux*bX + wx*tadd^2 ; uy = uy*bY + wy*tadd^2 (damped split
-        //   displacement - damping ux with the SAME profile is what makes the
-        //   layer perfectly matched)
-        //   az = ux + uy ; dazdt = wx + wy
-        // Only the y components are stored: ux = az - uy, wx = dazdt - wy.
-        // pmlBX[i] / pmlBY[j] are the per-sub-step damping factors exp(-sigma),
-        // graded quartically from the interface (1 at the inner edge) to the
-        // profile peak at the outer edge; full-grid float arrays (8 B/cell).
-        std::vector<float> pmlUy, pmlWy;
-        std::vector<float> pmlBX, pmlBY;
+        // --- CPML band state (OPEN only) ---------------------------------------
+        // Convolutional PML (Roden-Gedney CFS-CPML) fitted to the EXACT leapfrog
+        // stencil of the interior wave update. The band az/dazdt follow the SAME
+        // undamped kinematics as the interior; the absorption lives in a
+        // one-pole recursive filter psi on the az face differences, per axis:
+        //   psi[face]' = b[face]*psi[face] + c[face]*(az[+]-az[-])
+        //   dazdt[band] = 0.25*((FD/kap + psi)_x+ - (FD/kap + psi)_x- + same_y)
+        // b = exp(-(sigma/kappa + alpha)), c = sigma*(b-1)/(kappa*(kappa*sigma+alpha))
+        // are the standard CPML coefficients with a quartic sigma profile and an
+        // alpha floor at the interface. The recursion is passive (|b| < 1, the
+        // steady-state gain |c|/(1-b) = sigma/(kappa*sigma+alpha) <= 1), so the
+        // auxiliary system cannot close the leapfrog amplifier loop that made the
+        // split-field and Berenger-pair designs grow at the staggered Nyquist
+        // (measured |g| = 1.064/substep for the pair, feeding energy back into
+        // the canvas forever). The stretched-coordinate match keeps the band
+        // interface reflectionless at every frequency, including DC - the exact
+        // failure the old split-field design had (|R|^2 up to 2e-2 at f=2).
+        std::vector<float> pmlPsiX, pmlPsiY;  // face filter states (slot = -side cell)
+        // per-face recursion coefficients, indexed by the face slot along the
+        // respective axis (pmlBPX/pmlCPX sized gw, pmlBPY/pmlCPY sized gh)
+        std::vector<float> pmlBPX, pmlCPX;
+        std::vector<float> pmlBPY, pmlCPY;
 
         // PERF (task 8 v3): PML activity gate. ScanPmlActivity() runs once per
         // frame and measures the max wave state over the band plus an 8-cell

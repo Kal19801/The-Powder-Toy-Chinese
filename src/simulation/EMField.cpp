@@ -253,20 +253,20 @@ void EMField::ApplyGridGeometry()
         gw = visW + 2 * padL;
         gh = visH + 2 * padT;
         cells.assign(gw * gh, Cell{});
-        // split-field PML arrays (task 8): only the OPEN mode has a
-        // band; the split fields start at zero so ux = az - uy stays consistent
-        // with the applet's 1e-10 seed in az
+        // CPML band state (OPEN only): face filter states start at zero, which
+        // is consistent with the 1e-10 vacuum seed of az/dazdt (uniform field ->
+        // zero face differences -> the recursion stays at zero).
         if (boundaryMode == EMBND_OPEN)
         {
-                pmlUy.assign(gw * gh, 0.0f);
-                pmlWy.assign(gw * gh, 0.0f);
+                pmlPsiX.assign(gw * gh, 0.0);
+                pmlPsiY.assign(gw * gh, 0.0);
         }
         else
         {
-                pmlUy.clear();
-                pmlUy.shrink_to_fit();
-                pmlWy.clear();
-                pmlWy.shrink_to_fit();
+                pmlPsiX.clear();
+                pmlPsiX.shrink_to_fit();
+                pmlPsiY.clear();
+                pmlPsiY.shrink_to_fit();
         }
         // visible canvas window in cells; at regionScale < 1 the domain is
         // smaller than the canvas and the renderer MAGNIFIES it by renderScale
@@ -319,11 +319,12 @@ void EMField::Clear()
                         cell.jz = 0;
                 }
         }
-        // reset the PML split fields too (ux = az - uy must stay consistent)
-        if (!pmlUy.empty())
+        // reset the CPML face filter states too (a uniform field has zero face
+        // differences, so a zero recursion is the consistent rest state)
+        if (!pmlPsiX.empty())
         {
-                std::fill(pmlUy.begin(), pmlUy.end(), 0.0f);
-                std::fill(pmlWy.begin(), pmlWy.end(), 0.0f);
+                std::fill(pmlPsiX.begin(), pmlPsiX.end(), 0.0);
+                std::fill(pmlPsiY.begin(), pmlPsiY.end(), 0.0);
         }
         t = 0;
         forceTimeZero = 0;
@@ -838,43 +839,92 @@ void EMField::SetDamping()
                         cell.damp = .99; // need this to avoid reflections in dielectrics
                 }
         }
-        // --- split-field PML profile (task 8) -----------------------------------
-        // The band cells do not use `damp` (they skip the wave update); what is
-        // built here are their per-sub-step damping factors. The profile is
-        // quartic in the depth into the band: exactly 1 at the inner edge (the
-        // first band row behaves exactly like the interior, so the interface is
-        // seamless) rising to the calibrated peak at the outer edge. The peak
-        // scales as 1/cellSize: sigma_phys * cellSize = const keeps the
-        // attenuation per PIXEL resolution-invariant, matching the task-7 wave
-        // speed/wavelength decoupling.
-        pmlBX.assign(gw, 1.0f);
-        pmlBY.assign(gh, 1.0f);
+        // --- CPML face coefficient profiles (task 11) ---------------------------
+        // The band cells do not use `damp` (their az/dazdt kinematics are the
+        // undamped interior law); all absorption lives in the one-pole psi
+        // recursion on the face differences. What is built here are the
+        // per-face recursion coefficients from the standard CPML recipe:
+        //   b = exp(-(sigma/kappa + alpha))
+        //   c = sigma*(b-1) / (kappa*(kappa*sigma + alpha))
+        // with a quartic sigma profile from the interface (sigma ~ 0, the
+        // innermost face behaves like the interior, so the interface is
+        // seamless) to the calibrated peak at the outer edge. alpha is a small
+        // floor at the interface decaying to 0 outward: it is what makes the
+        // stretched coordinate finite at DC, killing the low-frequency pole the
+        // old split-field design had. kappa = 1 keeps the band wave speed
+        // identical to the interior (raised above 1 only to attenuate grazing
+        // evanescent tails if measurements demand it). The peak scales as
+        // 1/cellSize (sigma_phys*cellSize = const) so the attenuation per PIXEL
+        // is resolution-invariant, matching the task-7 speed/wavelength fix.
+        pmlBPX.assign(gw, 1.0f);
+        pmlCPX.assign(gw, 0.0f);
+        pmlBPY.assign(gh, 1.0f);
+        pmlCPY.assign(gh, 0.0f);
         if (boundaryMode == EMBND_OPEN)
         {
                 float sigTau = EM_PML_SIGMA * taddEff / EM_TADD_SUB;
+                float alTau = EM_PML_ALPHA * taddEff / EM_TADD_SUB;
                 int D = std::max(2, padL);
-                for (int x = 0; x < gw; x++)
+                // face slot -> profile depth r (0 = interface face, 1 = outer
+                // edge). psi slot i stores the +x face of cell i: the left band
+                // occupies slots 0..padL-1 with the INTERFACE at slot padL-1,
+                // the right band slots gw-padL-1..gw-2 with the INTERFACE at
+                // slot gw-padL-1 (slot gw-2 faces the dead ring).
+                auto buildFaces = [&](std::vector<float> &bp, std::vector<float> &cp,
+                                      int nSlots, bool outwardPositive)
                 {
-                        double d = -1;
-                        if (x < padL) d = double(padL - 1 - x);          // left band, innermost = padL-1
-                        else if (x >= gw - padL) d = double(x - (gw - padL)); // right band
-                        if (d >= 0)
+                        for (int s = 0; s < nSlots; s++)
                         {
-                                double s = sigTau * std::pow(d / double(D - 1), double(EM_PML_POWER));
-                                pmlBX[x] = float(std::exp(-s));
+                                // s runs over the face slots; for the left/top
+                                // bands slot 0 is the OUTERMOST face (against
+                                // the dead ring) and slot nSlots-1 the interface
+                                // face, for the right/bottom bands the other
+                                // way round. r = profile depth: ~0 at the
+                                // interface (seamless), ~1 at the outer edge.
+                                double r = outwardPositive ? (s + 0.5) / double(nSlots)
+                                                           : 1.0 - (s + 0.5) / double(nSlots);
+                                double sig = sigTau * std::pow(r, double(EM_PML_POWER));
+                                double al = alTau * (1.0 - r);
+                                // bilinear-exact one-pole for the correction
+                                // target -sigma/(alpha+sigma+i*omega):
+                                //   b = (2-h)/(2+h), g = -2*sigma/(2+h)
+                                // with h = sigma/kappa + alpha (per sub-step).
+                                // DC check: psi/FD -> -sigma/h (the exact
+                                // stretched-coordinate value).
+                                double h = sig / EM_PML_KAPPA + al;
+                                double b = (2.0 - h) / (2.0 + h);
+                                double c = -2.0 * sig / (2.0 + h);
+                                int slot = outwardPositive ? (gw - padL - 1 + s) : s;
+                                bp[slot] = float(b);
+                                cp[slot] = float(c);
                         }
-                }
+                };
+                D = padL;
+                buildFaces(pmlBPX, pmlCPX, D, false);          // left band: slot 0 outer
+                buildFaces(pmlBPX, pmlCPX, D, true);           // right band: slot n-1 outer
                 D = std::max(2, padT);
-                for (int y = 0; y < gh; y++)
+                for (int s = 0; s < D; s++)                                    // top band
                 {
-                        double d = -1;
-                        if (y < padT) d = double(padT - 1 - y);
-                        else if (y >= gh - padT) d = double(y - (gh - padT));
-                        if (d >= 0)
-                        {
-                                double s = sigTau * std::pow(d / double(D - 1), double(EM_PML_POWER));
-                                pmlBY[y] = float(std::exp(-s));
-                        }
+                        double r = 1.0 - (s + 0.5) / double(D);
+                        double sig = sigTau * std::pow(r, double(EM_PML_POWER));
+                        double al = alTau * (1.0 - r);
+                        double h = sig / EM_PML_KAPPA + al;
+                        double b = (2.0 - h) / (2.0 + h);
+                        double c = -2.0 * sig / (2.0 + h);
+                        pmlBPY[s] = float(b);
+                        pmlCPY[s] = float(c);
+                }
+                for (int s = 0; s < D; s++)                                    // bottom band
+                {
+                        int slot = gh - D - 1 + s;
+                        double r = (s + 0.5) / double(D);
+                        double sig = sigTau * std::pow(r, double(EM_PML_POWER));
+                        double al = alTau * (1.0 - r);
+                        double h = sig / EM_PML_KAPPA + al;
+                        double b = (2.0 - h) / (2.0 + h);
+                        double c = -2.0 * sig / (2.0 + h);
+                        pmlBPY[slot] = float(b);
+                        pmlCPY[slot] = float(c);
                 }
         }
         // EMBND_CLOSED and EMBND_PERIODIC: no damping ramp at all; closed reflects
@@ -1405,74 +1455,149 @@ void EMField::InteropParticles()
         }
 }
 
-// one sub-step of the split-field PML band (task 8), VELOCITY pass: runs
-// between the interior dazdt and az sweeps so every band cell reads its
-// neighbours' u^n values. Splits the update into an x and a y component,
-// each damped along its own axis with the graded PML profile:
-//   wx = wx*bX + Gx(az) ; wy = wy*bY + Gy(az) ; dazdt = wx + wy
-// Only the y components are stored: wx = dazdt - wy.
+// One sub-step of the CPML absorbing band (task 11), VELOCITY pass.
+// Two passes, both driven by the CURRENT state (az^n, dazdt = v^(n-1/2)):
+//
+//   1. psi recursion (one-pole CPML filter per band face, per axis),
+//      trapezoidal in time for an exact bilinear mapping of the target
+//      response -sigma/(alpha+sigma+i*omega):
+//        psi' = b*psi + (g/2)*(FD + FD_prev)
+//      FD_prev (the previous sub-step's face difference) is reconstructed
+//      EXACTLY from the current state:
+//        FD_prev = FD - tadd^2 * (dazdt[+]-dazdt)      (az integration law)
+//      so no history arrays are needed. This pass must run BEFORE the drive
+//      touches dazdt (the reconstruction needs the un-updated velocities).
+//   2. band dazdt drive (the EXACT interior stencil with the face
+//      differences replaced by their CPML-corrected versions):
+//        dazdt += 0.25*( (FD+psi)_x+ - (FD+psi)_x- + (FD+psi)_y+ - (FD+psi)_y- )
+//
+// The band cells share the interior kinematics; the stretched-coordinate
+// match keeps the band interface reflectionless at every frequency the
+// one-pole can represent - including DC, where the old split-field design
+// failed (|R|^2 up to 2e-2 at f=2).
 void EMField::PmlStepA()
 {
-        auto stepA = [&](int i, int j)
-        {
-                int gi = i + j * gw;
-                auto &oe = cells[gi];
-                double azc = oe.az;
-                double gx = (cells[gi - 1].az + cells[gi + 1].az - 2 * azc) * 0.25;
-                double gy = (cells[gi - gw].az + cells[gi + gw].az - 2 * azc) * 0.25;
-                float wyOld = pmlWy[gi];
-                float wyNew = float(wyOld * pmlBY[j] + gy);
-                double wxNew = (oe.dazdt - wyOld) * pmlBX[i] + gx;
-                pmlWy[gi] = wyNew;
-                oe.dazdt = wxNew + wyNew;
-        };
-        // left / right bands, full height (they include the four corners)
+        // 1. psi recursion over every band face (in-place: each face update
+        //    reads only its own psi state plus az/dazdt of its two cells).
+        //    x faces of the left / right bands (full height, corners
+        //    included), y faces of the top / bottom bands.
+        double tadd2 = double(taddEff) * double(taddEff);
         for (int j = 1; j < gh - 1; j++)
         {
+                for (int i = 0; i < padL; i++)
+                {
+                        int gi = i + j * gw;
+                        double fd = cells[gi + 1].az - cells[gi].az;
+                        double fd_old = fd - tadd2 * (cells[gi + 1].dazdt - cells[gi].dazdt);
+                        pmlPsiX[gi] = float(double(pmlBPX[i]) * pmlPsiX[gi]
+                                    + double(pmlCPX[i]) * 0.5 * (fd + fd_old));
+                }
+                for (int i = gw - padL - 1; i < gw - 1; i++)
+                {
+                        int gi = i + j * gw;
+                        double fd = cells[gi + 1].az - cells[gi].az;
+                        double fd_old = fd - tadd2 * (cells[gi + 1].dazdt - cells[gi].dazdt);
+                        pmlPsiX[gi] = float(double(pmlBPX[i]) * pmlPsiX[gi]
+                                    + double(pmlCPX[i]) * 0.5 * (fd + fd_old));
+                }
+        }
+        for (int i = 1; i < gw - 1; i++)
+        {
+                for (int j = 0; j < padT; j++)
+                {
+                        int gi = i + j * gw;
+                        double fd = cells[gi + gw].az - cells[gi].az;
+                        double fd_old = fd - tadd2 * (cells[gi + gw].dazdt - cells[gi].dazdt);
+                        pmlPsiY[gi] = float(double(pmlBPY[j]) * pmlPsiY[gi]
+                                    + double(pmlCPY[j]) * 0.5 * (fd + fd_old));
+                }
+                for (int j = gh - padT - 1; j < gh - 1; j++)
+                {
+                        int gi = i + j * gw;
+                        double fd = cells[gi + gw].az - cells[gi].az;
+                        double fd_old = fd - tadd2 * (cells[gi + gw].dazdt - cells[gi].dazdt);
+                        pmlPsiY[gi] = float(double(pmlBPY[j]) * pmlPsiY[gi]
+                                    + double(pmlCPY[j]) * 0.5 * (fd + fd_old));
+                }
+        }
+        // 2. band dazdt drive. Cells in a corner region are filtered on BOTH
+        //    axes; cells in a single-axis band keep the plain interior
+        //    difference on the other axis (their psi slots do not exist there,
+        //    which is exactly the CPML convention: an unfiltered axis is a
+        //    plain difference).
+        auto stepA = [&](int i, int j, bool fx, bool fy)
+        {
+                int gi = i + j * gw;
+                double lx;
+                if (fx)
+                {
+                        lx = (cells[gi + 1].az - cells[gi].az + pmlPsiX[gi])
+                           - (cells[gi].az - cells[gi - 1].az + pmlPsiX[gi - 1]);
+                }
+                else
+                {
+                        lx = cells[gi + 1].az - 2.0 * cells[gi].az + cells[gi - 1].az;
+                }
+                double ly;
+                if (fy)
+                {
+                        ly = (cells[gi + gw].az - cells[gi].az + pmlPsiY[gi])
+                           - (cells[gi].az - cells[gi - gw].az + pmlPsiY[gi - gw]);
+                }
+                else
+                {
+                        ly = cells[gi + gw].az - 2.0 * cells[gi].az + cells[gi - gw].az;
+                }
+                // accumulate, exactly like the interior leapfrog does (the
+                // interior pass adds its acceleration to dazdt; the band cells
+                // are skipped by the interior pass, so the band drive must add
+                // the acceleration here - overwriting would zero the band
+                // velocity every sub-step and the layer would reflect like a
+                // hard wall)
+                cells[gi].dazdt += 0.25 * (lx + ly);
+        };
+        // left / right bands, full height (they include the four corners);
+        // y filtering applies only to rows inside the top / bottom bands
+        for (int j = 1; j < gh - 1; j++)
+        {
+                bool fy = j < padT || j >= gh - padT;
                 for (int i = 1; i < padL; i++)
                 {
-                        stepA(i, j);
+                        stepA(i, j, true, fy);
                 }
                 for (int i = gw - padL; i < gw - 1; i++)
                 {
-                        stepA(i, j);
+                        stepA(i, j, true, fy);
                 }
         }
-        // top / bottom bands, middle columns
+        // top / bottom bands, middle columns: x is unfiltered (interior columns)
         for (int i = padL; i < gw - padL; i++)
         {
                 for (int j = 1; j < padT; j++)
                 {
-                        stepA(i, j);
+                        stepA(i, j, false, true);
                 }
                 for (int j = gh - padT; j < gh - 1; j++)
                 {
-                        stepA(i, j);
+                        stepA(i, j, false, true);
                 }
         }
 }
 
-// one sub-step of the split-field PML band (task 8), POSITION pass: runs after
-// the interior az sweep. The split displacement is damped with the SAME
-// profile as its velocity (ux,t + sx*ux = wx) - this is what makes the layer
-// perfectly matched (zero interface reflection in the continuum, every
-// frequency and angle):
-//   ux = ux*bX + wx*tadd^2 ; uy = uy*bY + wy*tadd^2 ; az = ux + uy
+// One sub-step of the CPML absorbing band, POSITION pass: runs after the
+// interior az sweep. Every band cell advances az with the SAME undamped
+// kinematic law as the interior - the stretched coordinate never touches the
+// kinematics, which is what keeps the layer matched (the absorption lives
+// entirely in the psi memory of the velocity pass).
 void EMField::PmlStepB()
 {
         double tadd2 = double(taddEff) * double(taddEff);
         auto stepB = [&](int i, int j)
         {
                 int gi = i + j * gw;
-                auto &oe = cells[gi];
-                float wyNew = pmlWy[gi];
-                double wxNew = oe.dazdt - wyNew;
-                float uyOld = pmlUy[gi];
-                float uyNew = float(uyOld * pmlBY[j] + wyNew * tadd2);
-                double uxNew = (oe.az - uyOld) * pmlBX[i] + wxNew * tadd2;
-                pmlUy[gi] = uyNew;
-                oe.az = uxNew + uyNew;
+                cells[gi].az += cells[gi].dazdt * tadd2;
         };
+        // left / right bands, full height (they include the four corners)
         for (int j = 1; j < gh - 1; j++)
         {
                 for (int i = 1; i < padL; i++)
@@ -1484,6 +1609,7 @@ void EMField::PmlStepB()
                         stepB(i, j);
                 }
         }
+        // top / bottom bands, middle columns
         for (int i = padL; i < gw - padL; i++)
         {
                 for (int j = 1; j < padT; j++)
@@ -1505,7 +1631,7 @@ void EMField::PmlStepB()
 // clamp pass.
 void EMField::ScanPmlActivity()
 {
-        if (boundaryMode != EMBND_OPEN || pmlUy.empty())
+        if (boundaryMode != EMBND_OPEN || pmlPsiX.empty())
         {
                 pmlQuiet = false;
                 return;
@@ -1527,8 +1653,8 @@ void EMField::ScanPmlActivity()
                 // NaN is never <= threshold, so poisoned cells read as active
                 if (!(std::abs(oe.az) <= double(EM_PML_QUIET)) ||
                     !(std::abs(oe.dazdt) <= double(EM_PML_QUIET)) ||
-                    !(std::abs(pmlUy[gi]) <= EM_PML_QUIET) ||
-                    !(std::abs(pmlWy[gi]) <= EM_PML_QUIET))
+                    !(std::abs(pmlPsiX[gi]) <= EM_PML_QUIET) ||
+                    !(std::abs(pmlPsiY[gi]) <= EM_PML_QUIET))
                 {
                         quiet = false;
                 }
@@ -1830,11 +1956,11 @@ void EMField::Update()
                                         cell.dazdt = 1e-10;
                                         cell.jz = 0;
                                         cell.jzext = 0;
-                                        // keep the PML split bookkeeping consistent
-                                        if (!pmlUy.empty())
+                                        // keep the CPML band bookkeeping consistent
+                                        if (!pmlPsiX.empty())
                                         {
-                                                pmlUy[gi] = 0;
-                                                pmlWy[gi] = 0;
+                                                pmlPsiX[gi] = 0;
+                                                pmlPsiY[gi] = 0;
                                         }
 #if EMFIELD_DEBUG
                                         fieldClampHits++;

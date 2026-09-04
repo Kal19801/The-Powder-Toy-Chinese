@@ -142,40 +142,63 @@ constexpr float EM_CELLS_PER_SUBSTEP = EM_TADD_SUB * 0.5f; // reference (cellSiz
 // hard cap on gw*gh so extreme regionScale+cellSize combos cannot OOM
 constexpr long long EM_MAX_CELLS = 6000000LL;
 
-// --- absorbing boundary (task 8, v2: split-field PML; v3: thin fast band) ----
+// --- absorbing boundary (task 8; task 11: CPML matched band) ------------------
 // OPEN pads the grid with an invisible band OUTSIDE the simulated region. The
-// band is a Berenger-style split-field perfectly matched layer (PML): pad
-// cells split the wave into (ux,wx) and (uy,wy) components, each damped along
-// its own axis with a quartic graded profile. The split displacement is damped
-// with the SAME profile as its velocity (ux,t + s*ux = wx), which makes the
-// interface reflection exactly zero in the continuum at every frequency and
-// incidence angle.
+// band is a convolutional PML (CFS-CPML) fitted to the exact leapfrog stencil
+// of the interior wave update: the band cells keep the UNDAMPED interior
+// kinematics (az += dazdt*tadd^2, dazdt from the same 5-point stencil) and the
+// absorption lives in a one-pole recursive filter psi on the az face
+// differences, per axis:
+//   psi' = b*psi + (g/2)*(FD + FD_prev);  dazdt += 0.25*(FD + psi) differences
+// The face correction target (1-sx)/sx = -sigma/(alpha+sigma+i*omega) is
+// EXACTLY a one-pole, and the trapezoidal (bilinear) recursion
+//   b = (2-h)/(2+h), g = -2*sigma/(2+h), h = sigma+alpha
+// realises it with no mapping error at any frequency (the bilinear transform
+// is exact for a one-pole; an impulse-invariant recursion leaves an O(omega)
+// phase error measured at 10x worse reflection). FD_prev, the previous
+// sub-step's face difference, is reconstructed exactly from the current state
+// (FD_prev = FD - tadd^2*dazdt difference), so no extra history arrays exist.
+// Two earlier designs of this band were REJECTED on hard evidence from the
+// headless harness and must not come back:
+//  - split-field Berenger (ux/uy + wx/wy): stable, but DC/low-frequency pole
+//    AND a growing trapped mode (pmlUy measured growing ~1.2%/substep,
+//    continuously re-radiating into the canvas);
+//  - Berenger pair (V=Vx+Vy + face states Hx/Hy, impedance-matched pairs):
+//    analytically matched at all frequencies, but the two-sided staggered
+//    auxiliary leapfrog closes an amplifier loop at the staggered Nyquist
+//    (measured |g| = 1.064/substep at kx=ky=pi) - a structural instability
+//    that no per-axis damping profile removes (eigen scan: |g| > 1.06 for any
+//    b when one axis is undamped).
+// The CPML recursion is passive (|b| < 1, steady-state gain <= 1): no closed
+// amplifier loop is possible, and being a low-pass memory on REAL az
+// differences it cannot decouple from the wave.
 //
-// v3 (performance fix): the old 256px band was 3.3x the area of the visible
-// domain at the default 2px cell, which made OPEN mode ~4x the cost of
-// CLOSED/PERIODIC. Two changes bring it to parity without giving up the
-// matched-layer quality:
-//  1. the band is 64px thick with the profile peak scaled 4x up, which keeps
-//     the optical depth sigma*D unchanged (measured pulse reflectometry, the
-//     engine's exact update scheme):
-//       f=40 (lam  6.7c): < 1e-12   f=10 (lam 27c, default): ~1e-11 (D=32)
-//       f=5  (lam 54c):   ~5e-6     f=2  (lam 134c):        ~2e-2 (low-f limit)
-//     the f<=2 residual is thin-layer physics, unchanged from the 256px band;
-//  2. EMField::ScanPmlActivity() gates the two band passes per sub-step: while
-//     the band AND an 8-cell interior guard strip are entirely quiet (max wave
-//     state < EM_PML_QUIET), the passes are skipped - numerically exact, since
-//     damping a below-threshold state keeps it below the threshold. A wave
-//     trips the gate at least 4 cells (max per-frame travel) before it can
-//     reach the interface, so the layer always wakes up in time. Scenes with
-//     no wave near the screen edge now run OPEN exactly as cheap as CLOSED.
+// EMField::ScanPmlActivity() gates the two band passes per sub-step: while
+// the band AND an 8-cell interior guard strip are entirely quiet (max wave
+// state < EM_PML_QUIET), the passes are skipped - numerically exact, since
+// filtering a zero state keeps it zero. A wave trips the gate at least 4
+// cells (max per-frame travel) before it can reach the interface, so the
+// layer always wakes up in time. Scenes with no wave near the screen edge
+// run OPEN exactly as cheap as CLOSED.
 constexpr int   EM_PAD_PX        = 64;   // PML band thickness in pixels
 constexpr int   EM_PAD_MIN_CELLS = 16;
 constexpr int   EM_PAD_MAX_CELLS = 96;
-// PML profile: per-sub-step damping exponent peak at the outer edge,
-// b = exp(-EM_PML_SIGMA * taddEff/EM_TADD_SUB * (depth/width)^EM_PML_POWER);
-// calibrated by offline pulse reflectometry
-constexpr float EM_PML_SIGMA     = 0.111f;
+// CPML profile: sigma rises quartically from the interface face to the outer
+// edge; the peak (per sub-step) scales with taddEff so the attenuation per
+// PIXEL is resolution-invariant. The one-way optical depth of a quartic
+// profile is ~sigma_peak*width/5 Np; 0.30 with D=32 gives ~2 Np one-way, and
+// the round-trip residual is set by the (tiny) discrete stencil reflection,
+// not by optical depth.
+constexpr float EM_PML_SIGMA     = 0.60f;
 constexpr float EM_PML_POWER     = 4.0f;
+// alpha floor at the interface (decaying to 0 at the outer edge): makes the
+// stretched coordinate finite at DC. Standard CPML practice; also damps the
+// weakly-excited interface poles of the discrete recursion.
+constexpr float EM_PML_ALPHA     = 0.03f;
+// kappa = 1 keeps the band wave speed identical to the interior. Raise only
+// if grazing evanescent tails are measured to leak (they attenuate the
+// evanescent spectrum without touching propagating waves).
+constexpr float EM_PML_KAPPA     = 1.0f;
 // wave state below which a cell counts as quiet for the PML activity gate
 // (the vacuum seed is 1e-10, so a resting band is quiet by construction)
 constexpr float EM_PML_QUIET     = 1e-9f;
